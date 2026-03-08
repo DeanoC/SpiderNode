@@ -14,6 +14,12 @@ fi
 
 cd "$ROOT_DIR"
 
+if [[ "${ALLOW_ZWASM_WINDOWS_CROSS:-0}" != "1" ]] && grep -q 'b.dependency("zwasm"' deps/spider-protocol/build.zig; then
+  echo "==> Skipping Windows cross-build: embedded zwasm is not yet Windows-compatible"
+  echo "==> Set ALLOW_ZWASM_WINDOWS_CROSS=1 to force this check once the runtime supports Windows"
+  exit 0
+fi
+
 echo "==> Cross-compiling SpiderNode for $TARGET ($OPTIMIZE)"
 zig build -Dtarget="$TARGET" -Doptimize="$OPTIMIZE"
 
