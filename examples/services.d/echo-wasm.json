@@ -27,7 +27,6 @@
     "type": "wasm",
     "abi": "namespace-driver-v1",
     "module_path": "./zig-out/bin/spiderweb-echo-driver-wasm.wasm",
-    "runner_path": "wasmtime",
     "timeout_ms": 15000
   },
   "permissions": {
@@ -47,5 +46,5 @@
     "status": "status.json",
     "metrics": "metrics.json"
   },
-  "help_md": "Reference WASI namespace driver. Enable after installing wasmtime."
+  "help_md": "Reference WASI namespace driver running on the embedded zwasm runtime."
 }

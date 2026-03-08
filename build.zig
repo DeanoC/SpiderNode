@@ -76,6 +76,24 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(echo_wasm);
 
+    const chat_wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+    const chat_wasm_mod = b.createModule(.{
+        .root_source_file = b.path("examples/drivers/chat_venom_driver.zig"),
+        .target = chat_wasm_target,
+        .optimize = optimize,
+    });
+    const chat_wasm = b.addExecutable(.{
+        .name = "spiderweb-chat-driver-wasm",
+        .root_module = chat_wasm_mod,
+    });
+    chat_wasm.entry = .disabled;
+    chat_wasm.rdynamic = true;
+    chat_wasm.export_memory = true;
+    b.installArtifact(chat_wasm);
+
     const run_cmd = b.addRunArtifact(spider_node);
     if (b.args) |args| run_cmd.addArgs(args);
     const run_step = b.step("run", "Run spiderweb-fs-node");
