@@ -69,8 +69,8 @@ Invoke payload examples:
 
 `spiderweb-fs-node` can advertise additional namespace services via JSON manifests:
 
-- `--service-manifest <path>` (repeatable)
-- `--services-dir <path>` (repeatable, loads `*.json`)
+- `--venom-manifest <path>` (repeatable)
+- `--venoms-dir <path>` (repeatable, loads `*.json`)
 
 Example:
 
@@ -81,8 +81,8 @@ Example:
   --control-auth-token "<admin-token>" \
   --pair-mode request \
   --manifest-reload-interval-ms 2000 \
-  --service-manifest ./examples/services.d/echo.json \
-  --services-dir ./services.d
+  --venom-manifest ./examples/services.d/echo.json \
+  --venoms-dir ./services.d
 ```
 
 Manifest shape (minimum):
