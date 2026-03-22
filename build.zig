@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
     });
     const spider_protocol_mod = spider_protocol_dep.module("spider-protocol");
     const spiderweb_fs_mod = spider_protocol_dep.module("spiderweb_fs");
-    const spiderweb_node_mod = b.createModule(.{
+    const spiderweb_node_mod = b.addModule("spiderweb_node", .{
         .root_source_file = b.path("src/spiderweb_node/lib.zig"),
         .target = target,
         .optimize = optimize,
