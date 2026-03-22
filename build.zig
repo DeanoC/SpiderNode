@@ -4,17 +4,23 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const spider_protocol_dep = b.dependency("spider_protocol", .{
-        .target = target,
-        .optimize = optimize,
-    });
     const zwasm_dep = b.dependency("zwasm", .{
         .target = target,
         .optimize = optimize,
         .jit = false,
     });
-    const spider_protocol_mod = spider_protocol_dep.module("spider-protocol");
-    const spiderweb_fs_mod = spider_protocol_dep.module("spiderweb_fs");
+    const spider_protocol_mod = b.addModule("spider-protocol", .{
+        .root_source_file = b.path("deps/spider-protocol/src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    spider_protocol_mod.addImport("zwasm", zwasm_dep.module("zwasm"));
+    const spiderweb_fs_mod = b.addModule("spiderweb_fs", .{
+        .root_source_file = b.path("deps/spider-protocol/src/spiderweb_fs/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    spiderweb_fs_mod.addImport("spider-protocol", spider_protocol_mod);
     const spiderweb_node_mod = b.addModule("spiderweb_node", .{
         .root_source_file = b.path("src/spiderweb_node/lib.zig"),
         .target = target,
