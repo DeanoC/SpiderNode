@@ -406,10 +406,10 @@ fn fdDup2(from: fd_t, to: fd_t) !void {
 fn syncWindowsStdHandle(fd: fd_t) !void {
     if (builtin.os.tag != .windows) return;
 
-    const std_handle_id = switch (fd) {
-        0 => windows.STD_INPUT_HANDLE,
-        1 => windows.STD_OUTPUT_HANDLE,
-        2 => windows.STD_ERROR_HANDLE,
+    const std_handle_id: windows.DWORD = switch (fd) {
+        0 => @as(windows.DWORD, windows.STD_INPUT_HANDLE),
+        1 => @as(windows.DWORD, windows.STD_OUTPUT_HANDLE),
+        2 => @as(windows.DWORD, windows.STD_ERROR_HANDLE),
         else => return,
     };
 
