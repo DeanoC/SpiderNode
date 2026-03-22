@@ -178,6 +178,7 @@ pub fn truncateAbsolute(path: []const u8, size: u64) !void {
     var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_write });
     defer file.close();
     try file.setEndPos(size);
+    try file.sync();
 }
 
 pub fn deleteFileAbsolute(path: []const u8) !void {

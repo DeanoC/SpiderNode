@@ -4687,6 +4687,7 @@ pub const NodeOps = struct {
         if (decoded.len > max_write_bytes) return DispatchResult.failure(fs_protocol.Errno.EINVAL, "WRITE exceeds max_write");
 
         handle.file.pwriteAll(decoded, off) catch |err| return mapError(err);
+        syncAfterWriteIfNeeded(self.exports.items[handle.export_index].source_kind, &handle.file) catch |err| return mapError(err);
         self.queueInvalidation(.{
             .INVAL = .{
                 .node = handle.node_id,
@@ -6314,6 +6315,13 @@ fn sourceTruncateAbsolute(source_kind: fs_source_adapter.SourceKind, path: []con
         .windows => fs_windows_source_adapter.truncateAbsolute(path, size),
         else => fs_local_source_adapter.truncateAbsolute(path, size),
     };
+}
+
+fn syncAfterWriteIfNeeded(source_kind: fs_source_adapter.SourceKind, file: *std.fs.File) !void {
+    switch (source_kind) {
+        .windows => try file.sync(),
+        else => {},
+    }
 }
 
 fn sourceDeleteFileAbsolute(source_kind: fs_source_adapter.SourceKind, path: []const u8) !void {
@@ -8459,6 +8467,103 @@ test "fs_node_ops: excluded local subtrees evict stale node and handle state" {
     var write_result = node_ops.dispatch(write_req);
     defer write_result.deinit(allocator);
     try std.testing.expectEqual(fs_protocol.Errno.EBADF, write_result.err_no);
+}
+
+test "fs_node_ops: local rewrite sequence keeps written bytes visible before close" {
+    const allocator = std.testing.allocator;
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+
+    const root = try temp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var node_ops = try NodeOps.init(allocator, &[_]ExportSpec{
+        .{
+            .name = "work",
+            .path = root,
+            .ro = false,
+            .source_kind = if (builtin.os.tag == .windows) .windows else .posix,
+        },
+    });
+    defer node_ops.deinit();
+
+    const root_id = node_ops.exports.items[0].root_node_id;
+
+    const create_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":1,\"op\":\"CREATE\",\"node\":{d},\"a\":{{\"name\":\"relay.txt\",\"flags\":1}}}}",
+        .{root_id},
+    );
+    defer allocator.free(create_json);
+    var create_req = try fs_protocol.parseRequest(allocator, create_json);
+    defer create_req.deinit();
+    var create_result = node_ops.dispatch(create_req);
+    defer create_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, create_result.err_no);
+
+    var create_parsed = try std.json.parseFromSlice(std.json.Value, allocator, create_result.result_json.?, .{});
+    defer create_parsed.deinit();
+    const handle_id = create_parsed.value.object.get("h").?.integer;
+    const node_id = create_parsed.value.object.get("attr").?.object.get("id").?.integer;
+
+    const expected = "relay windows parity\n";
+    const encoded = try encodeBase64(allocator, expected);
+    defer allocator.free(encoded);
+
+    const write_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":2,\"op\":\"WRITE\",\"h\":{d},\"a\":{{\"off\":0,\"data_b64\":\"{s}\"}}}}",
+        .{ handle_id, encoded },
+    );
+    defer allocator.free(write_json);
+    var write_req = try fs_protocol.parseRequest(allocator, write_json);
+    defer write_req.deinit();
+    var write_result = node_ops.dispatch(write_req);
+    defer write_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, write_result.err_no);
+
+    const truncate_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":3,\"op\":\"TRUNCATE\",\"node\":{d},\"a\":{{\"sz\":{d}}}}}",
+        .{ node_id, expected.len },
+    );
+    defer allocator.free(truncate_json);
+    var truncate_req = try fs_protocol.parseRequest(allocator, truncate_json);
+    defer truncate_req.deinit();
+    var truncate_result = node_ops.dispatch(truncate_req);
+    defer truncate_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, truncate_result.err_no);
+
+    const relay_path = try std.fs.path.join(allocator, &.{ root, "relay.txt" });
+    defer allocator.free(relay_path);
+
+    {
+        var file = try std.fs.openFileAbsolute(relay_path, .{ .mode = .read_only });
+        defer file.close();
+        const before_close = try file.readToEndAlloc(allocator, 4096);
+        defer allocator.free(before_close);
+        try std.testing.expectEqualStrings(expected, before_close);
+    }
+
+    const close_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":4,\"op\":\"CLOSE\",\"h\":{d}}}",
+        .{handle_id},
+    );
+    defer allocator.free(close_json);
+    var close_req = try fs_protocol.parseRequest(allocator, close_json);
+    defer close_req.deinit();
+    var close_result = node_ops.dispatch(close_req);
+    defer close_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, close_result.err_no);
+
+    {
+        var file = try std.fs.openFileAbsolute(relay_path, .{ .mode = .read_only });
+        defer file.close();
+        const after_close = try file.readToEndAlloc(allocator, 4096);
+        defer allocator.free(after_close);
+        try std.testing.expectEqualStrings(expected, after_close);
+    }
 }
 
 test "fs_node_ops: local readdir paging skips hidden entries without duplicates" {
