@@ -8,7 +8,21 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const spiderweb_node_mod = spider_protocol_dep.module("spiderweb_node");
+    const zwasm_dep = b.dependency("zwasm", .{
+        .target = target,
+        .optimize = optimize,
+        .jit = false,
+    });
+    const spider_protocol_mod = spider_protocol_dep.module("spider-protocol");
+    const spiderweb_fs_mod = spider_protocol_dep.module("spiderweb_fs");
+    const spiderweb_node_mod = b.createModule(.{
+        .root_source_file = b.path("src/spiderweb_node/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    spiderweb_node_mod.addImport("spider-protocol", spider_protocol_mod);
+    spiderweb_node_mod.addImport("spiderweb_fs", spiderweb_fs_mod);
+    spiderweb_node_mod.addImport("zwasm", zwasm_dep.module("zwasm"));
 
     const node_main_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),

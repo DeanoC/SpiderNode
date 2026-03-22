@@ -7,6 +7,9 @@
         .spider_protocol = .{
             .path = "deps/spider-protocol",
         },
+        .zwasm = .{
+            .path = "deps/spider-protocol/deps/zwasm",
+        },
     },
     .paths = .{
         "build.zig",
