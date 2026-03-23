@@ -13,8 +13,11 @@ pub const VenomDescriptor = struct {
     state: []u8,
     provider_scope: ?[]u8 = null,
     categories_json: []u8,
+    host_roles_json: []u8,
     hosts_json: []u8,
+    binding_scopes_json: []u8,
     projection_modes_json: []u8,
+    runtime_kind: []u8,
     requirements_json: []u8,
     capabilities_json: []u8,
     mounts_json: []u8,
@@ -35,8 +38,11 @@ pub const VenomDescriptor = struct {
         allocator.free(self.state);
         if (self.provider_scope) |value| allocator.free(value);
         allocator.free(self.categories_json);
+        allocator.free(self.host_roles_json);
         allocator.free(self.hosts_json);
+        allocator.free(self.binding_scopes_json);
         allocator.free(self.projection_modes_json);
+        allocator.free(self.runtime_kind);
         allocator.free(self.requirements_json);
         allocator.free(self.capabilities_json);
         allocator.free(self.mounts_json);
@@ -77,8 +83,11 @@ pub fn venomDigest64(service: VenomDescriptor) u64 {
         hasher.update(&.{0});
     }
     hashField(&hasher, service.categories_json);
+    hashField(&hasher, service.host_roles_json);
     hashField(&hasher, service.hosts_json);
+    hashField(&hasher, service.binding_scopes_json);
     hashField(&hasher, service.projection_modes_json);
+    hashField(&hasher, service.runtime_kind);
     hashField(&hasher, service.requirements_json);
     hashField(&hasher, service.capabilities_json);
     hashField(&hasher, service.mounts_json);
@@ -175,14 +184,37 @@ pub fn replaceVenomsFromJsonValue(
                 try encodeArrayValue(allocator, categories_value)
             else
                 try allocator.dupe(u8, "[]"),
+            .host_roles_json = if (obj.get("host_roles")) |host_roles_value|
+                try encodeArrayValue(allocator, host_roles_value)
+            else if (obj.get("hosts")) |hosts_value|
+                try encodeArrayValue(allocator, hosts_value)
+            else
+                try allocator.dupe(u8, "[]"),
             .hosts_json = if (obj.get("hosts")) |hosts_value|
                 try encodeArrayValue(allocator, hosts_value)
+            else if (obj.get("host_roles")) |host_roles_value|
+                try encodeArrayValue(allocator, host_roles_value)
+            else
+                try allocator.dupe(u8, "[]"),
+            .binding_scopes_json = if (obj.get("binding_scopes")) |binding_scopes_value|
+                try encodeArrayValue(allocator, binding_scopes_value)
+            else if (obj.get("projection_modes")) |projection_modes_value|
+                try encodeArrayValue(allocator, projection_modes_value)
             else
                 try allocator.dupe(u8, "[]"),
             .projection_modes_json = if (obj.get("projection_modes")) |projection_modes_value|
                 try encodeArrayValue(allocator, projection_modes_value)
+            else if (obj.get("binding_scopes")) |binding_scopes_value|
+                try encodeArrayValue(allocator, binding_scopes_value)
             else
                 try allocator.dupe(u8, "[]"),
+            .runtime_kind = if (obj.get("runtime_kind")) |runtime_kind_value| blk: {
+                if (runtime_kind_value != .string or runtime_kind_value.string.len == 0) return Error.InvalidPayload;
+                break :blk try allocator.dupe(u8, runtime_kind_value.string);
+            } else if (obj.get("runtime")) |runtime_value|
+                try allocator.dupe(u8, inferRuntimeKindFromRuntimeValue(runtime_value))
+            else
+                try allocator.dupe(u8, "native"),
             .requirements_json = if (obj.get("requirements")) |requirements_value|
                 try encodeObjectValue(allocator, requirements_value)
             else
@@ -276,11 +308,14 @@ pub fn appendVenomJson(
         try out.writer(allocator).print(",\"provider_scope\":\"{s}\"", .{escaped_provider_scope});
     }
     try out.writer(allocator).print(
-        ",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"endpoints\":[",
+        ",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":[",
         .{
             service.categories_json,
+            service.host_roles_json,
             service.hosts_json,
+            service.binding_scopes_json,
             service.projection_modes_json,
+            service.runtime_kind,
             service.requirements_json,
         },
     );
@@ -337,6 +372,15 @@ fn getOptionalString(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = obj.get(name) orelse return null;
     if (value != .string) return null;
     return value.string;
+}
+
+fn inferRuntimeKindFromRuntimeValue(raw: std.json.Value) []const u8 {
+    if (raw == .object) {
+        if (raw.object.get("type")) |value| {
+            if (value == .string and std.mem.eql(u8, value.string, "wasm")) return "wasm";
+        }
+    }
+    return "native";
 }
 
 fn encodeCapabilitiesValue(allocator: std.mem.Allocator, raw: std.json.Value) ![]u8 {
@@ -424,7 +468,7 @@ test "venom_catalog: parses and re-renders venoms array" {
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "[{\"venom_id\":\"fs\",\"package_id\":\"fs\",\"instance_id\":\"local:fs\",\"kind\":\"fs\",\"version\":\"1\",\"state\":\"online\",\"provider_scope\":\"host_local\",\"categories\":[\"filesystem\"],\"hosts\":[\"node\"],\"projection_modes\":[\"node_export\"],\"requirements\":{},\"endpoints\":[\"/nodes/node-1/fs\"],\"capabilities\":{\"rw\":true}}]",
+        "[{\"venom_id\":\"fs\",\"package_id\":\"fs\",\"instance_id\":\"local:fs\",\"kind\":\"fs\",\"version\":\"1\",\"state\":\"online\",\"provider_scope\":\"host_local\",\"categories\":[\"filesystem\"],\"host_roles\":[\"node\"],\"hosts\":[\"node\"],\"binding_scopes\":[\"node\"],\"projection_modes\":[\"node_export\"],\"runtime_kind\":\"native\",\"requirements\":{},\"endpoints\":[\"/nodes/node-1/fs\"],\"capabilities\":{\"rw\":true}}]",
         .{},
     );
     defer parsed.deinit();
@@ -439,6 +483,9 @@ test "venom_catalog: parses and re-renders venoms array" {
     try appendVenomJson(allocator, &out, services.items[0]);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"venom_id\":\"fs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"package_id\":\"fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"host_roles\":[\"node\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"binding_scopes\":[\"node\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"runtime_kind\":\"native\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"capabilities\":{\"rw\":true}") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"mounts\":[]") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"runtime\":{}") != null);
@@ -451,7 +498,7 @@ test "venom_catalog: accepts optional namespace metadata fields" {
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "[{\"venom_id\":\"camera-main\",\"package_id\":\"camera-main\",\"instance_id\":\"node-1:camera-main\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"provider_scope\":\"node_export\",\"categories\":[\"camera\",\"edge\"],\"hosts\":[\"node\"],\"projection_modes\":[\"node_export\"],\"requirements\":{\"host_capabilities\":[\"namespace_driver\"]},\"endpoints\":[\"/nodes/node-1/camera\"],\"capabilities\":{\"still\":true},\"mounts\":[{\"mount_id\":\"camera-main\",\"mount_path\":\"/nodes/node-1/camera\",\"state\":\"online\"}],\"ops\":{\"model\":\"namespace\"},\"runtime\":{\"type\":\"native_proc\"},\"permissions\":{\"default\":\"deny-by-default\"},\"schema\":{\"model\":\"namespace-mount\"},\"invoke_template\":{\"op\":\"capture\"},\"help_md\":\"Camera driver\"}]",
+        "[{\"venom_id\":\"camera-main\",\"package_id\":\"camera-main\",\"instance_id\":\"node-1:camera-main\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"provider_scope\":\"node_export\",\"categories\":[\"camera\",\"edge\"],\"host_roles\":[\"node\"],\"hosts\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"projection_modes\":[\"node_export\"],\"runtime_kind\":\"native\",\"requirements\":{\"host_capabilities\":[\"namespace_driver\"]},\"endpoints\":[\"/nodes/node-1/camera\"],\"capabilities\":{\"still\":true},\"mounts\":[{\"mount_id\":\"camera-main\",\"mount_path\":\"/nodes/node-1/camera\",\"state\":\"online\"}],\"ops\":{\"model\":\"namespace\"},\"runtime\":{\"type\":\"native_proc\"},\"permissions\":{\"default\":\"deny-by-default\"},\"schema\":{\"model\":\"namespace-mount\"},\"invoke_template\":{\"op\":\"capture\"},\"help_md\":\"Camera driver\"}]",
         .{},
     );
     defer parsed.deinit();
@@ -462,6 +509,9 @@ test "venom_catalog: accepts optional namespace metadata fields" {
     try std.testing.expectEqual(@as(usize, 1), services.items.len);
     try std.testing.expectEqualStrings("camera-main", services.items[0].package_id.?);
     try std.testing.expectEqualStrings("node_export", services.items[0].provider_scope.?);
+    try std.testing.expect(std.mem.indexOf(u8, services.items[0].host_roles_json, "\"node\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, services.items[0].binding_scopes_json, "\"workspace\"") != null);
+    try std.testing.expectEqualStrings("native", services.items[0].runtime_kind);
     try std.testing.expect(std.mem.indexOf(u8, services.items[0].projection_modes_json, "\"node_export\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, services.items[0].mounts_json, "\"mount_id\":\"camera-main\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, services.items[0].runtime_json, "\"type\":\"native_proc\"") != null);
@@ -475,7 +525,7 @@ test "venom_catalog: requires venom_id and re-renders it" {
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "[{\"venom_id\":\"memory\",\"kind\":\"memory\",\"version\":\"1\",\"state\":\"online\",\"categories\":[],\"hosts\":[],\"projection_modes\":[],\"requirements\":{},\"endpoints\":[\"/global/memory\"]}]",
+        "[{\"venom_id\":\"memory\",\"kind\":\"memory\",\"version\":\"1\",\"state\":\"online\",\"categories\":[],\"host_roles\":[],\"hosts\":[],\"binding_scopes\":[],\"projection_modes\":[],\"runtime_kind\":\"native\",\"requirements\":{},\"endpoints\":[\"/global/memory\"]}]",
         .{},
     );
     defer parsed.deinit();

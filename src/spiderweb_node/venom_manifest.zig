@@ -44,10 +44,15 @@ pub fn loadVenomManifestFile(
     defer allocator.free(provider_scope);
     const categories_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "categories", "[]");
     defer allocator.free(categories_json);
+    const host_roles_json = try parseOptionalArrayJsonFromNamesOrDefault(allocator, parsed.value.object, &.{ "host_roles", "hosts" }, "[\"node\"]");
+    defer allocator.free(host_roles_json);
     const hosts_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "hosts", "[\"node\"]");
     defer allocator.free(hosts_json);
+    const binding_scopes_json = try parseOptionalArrayJsonFromNamesOrDefault(allocator, parsed.value.object, &.{ "binding_scopes", "projection_modes" }, "[\"workspace\"]");
+    defer allocator.free(binding_scopes_json);
     const projection_modes_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "projection_modes", "[\"node_export\"]");
     defer allocator.free(projection_modes_json);
+    const runtime_kind = inferRuntimeKind(parsed.value.object);
     const requirements_json = try parseOptionalObjectJsonOrDefault(allocator, parsed.value.object, "requirements", "{}");
     defer allocator.free(requirements_json);
 
@@ -126,13 +131,13 @@ pub fn loadVenomManifestFile(
         defer allocator.free(escaped_help);
         break :blk try std.fmt.allocPrint(
             allocator,
-            "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"provider_scope\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s},\"help_md\":\"{s}\"{s}}}",
-            .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, escaped_provider_scope, categories_json, hosts_json, projection_modes_json, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, escaped_help, instance_fragment },
+            "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"provider_scope\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s},\"help_md\":\"{s}\"{s}}}",
+            .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, escaped_provider_scope, categories_json, host_roles_json, hosts_json, binding_scopes_json, projection_modes_json, runtime_kind, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, escaped_help, instance_fragment },
         );
     } else try std.fmt.allocPrint(
         allocator,
-        "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"provider_scope\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s}{s}}}",
-        .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, escaped_provider_scope, categories_json, hosts_json, projection_modes_json, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, instance_fragment },
+        "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"provider_scope\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"hosts\":{s},\"binding_scopes\":{s},\"projection_modes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s}{s}}}",
+        .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, escaped_provider_scope, categories_json, host_roles_json, hosts_json, binding_scopes_json, projection_modes_json, runtime_kind, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, instance_fragment },
     );
 
     return .{
@@ -188,6 +193,21 @@ fn parseEndpoints(
     }
 }
 
+fn parseOptionalArrayJsonFromNamesOrDefault(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    names: []const []const u8,
+    default_json: []const u8,
+) ![]u8 {
+    for (names) |name| {
+        if (obj.get(name)) |value| {
+            if (value != .array) return error.InvalidManifest;
+            return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})});
+        }
+    }
+    return allocator.dupe(u8, default_json);
+}
+
 fn defaultSchemaJsonForManifest(obj: std.json.ObjectMap) []const u8 {
     if (obj.get("invoke_template") != null) return venom_contracts.namespace_service.descriptor_schema_json;
     if (obj.get("ops")) |ops_value| {
@@ -209,6 +229,20 @@ fn defaultSchemaJsonForManifest(obj: std.json.ObjectMap) []const u8 {
         }
     }
     return "{\"model\":\"namespace-mount\"}";
+}
+
+fn inferRuntimeKind(obj: std.json.ObjectMap) []const u8 {
+    if (obj.get("runtime_kind")) |value| {
+        if (value == .string and value.string.len > 0) return value.string;
+    }
+    if (obj.get("runtime")) |value| {
+        if (value == .object) {
+            if (value.object.get("type")) |runtime_type| {
+                if (runtime_type == .string and std.mem.eql(u8, runtime_type.string, "wasm")) return "wasm";
+            }
+        }
+    }
+    return "native";
 }
 
 fn parseMountsJson(
