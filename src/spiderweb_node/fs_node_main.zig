@@ -12,6 +12,7 @@ const zwasm_runtime = @import("zwasm_runtime.zig");
 const venom_manifest = @import("venom_manifest.zig");
 const venom_runtime_manager = @import("venom_runtime_manager.zig");
 const venom_contracts = @import("venom_contracts.zig");
+const venom_metadata = @import("venom_metadata.zig");
 const namespace_driver = @import("namespace_driver.zig");
 const unified = @import("spider-protocol").unified;
 
@@ -1616,6 +1617,7 @@ fn buildNamespaceVenomExportFromVenomJson(
     if (parsed.value != .object) return error.InvalidArguments;
 
     const obj = parsed.value.object;
+    if (!venom_metadata.runtimeKindMatchesRuntimeObject(obj)) return error.InvalidArguments;
     const venom_id = getRequiredString(obj, "venom_id") orelse return error.InvalidArguments;
     const runtime = obj.get("runtime") orelse return null;
     if (runtime != .object) return null;

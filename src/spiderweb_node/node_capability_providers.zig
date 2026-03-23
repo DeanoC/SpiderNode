@@ -1,6 +1,7 @@
 const std = @import("std");
 const fs_node_ops = @import("fs_node_ops.zig");
 const venom_contracts = @import("venom_contracts.zig");
+const venom_metadata = @import("venom_metadata.zig");
 
 pub const NodeLabelArg = struct {
     key: []const u8,
@@ -240,6 +241,7 @@ fn validateExtraVenomJson(
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, venom_json, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidProviderConfig;
+    if (!venom_metadata.runtimeKindMatchesRuntimeObject(parsed.value.object)) return error.InvalidProviderConfig;
 
     const venom_id_val = parsed.value.object.get("venom_id") orelse return error.InvalidProviderConfig;
     if (venom_id_val != .string) return error.InvalidProviderConfig;

@@ -1,5 +1,6 @@
 const std = @import("std");
 const namespace_driver = @import("namespace_driver.zig");
+const venom_metadata = @import("venom_metadata.zig");
 
 const supervisor_loop_sleep_ms: u64 = 25;
 const runtime_stats_last_error_max: usize = 256;
@@ -445,6 +446,7 @@ fn parseVenomDescriptor(
     if (parsed.value != .object) return error.InvalidServiceCatalog;
 
     const obj = parsed.value.object;
+    if (!venom_metadata.runtimeKindMatchesRuntimeObject(obj)) return error.InvalidServiceCatalog;
     const venom_id = getRequiredString(obj, "venom_id") orelse return error.InvalidServiceCatalog;
     const kind = getRequiredString(obj, "kind") orelse return error.InvalidServiceCatalog;
     const version = getOptionalString(obj, "version") orelse "1";

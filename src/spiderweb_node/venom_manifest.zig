@@ -24,6 +24,7 @@ pub fn loadVenomManifestFile(
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidManifest;
+    if (!venom_metadata.runtimeKindMatchesRuntimeObject(parsed.value.object)) return error.InvalidManifest;
 
     const enabled = parseOptionalBool(parsed.value.object, "enabled") orelse true;
     if (!enabled) return null;

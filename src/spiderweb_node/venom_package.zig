@@ -72,6 +72,7 @@ pub fn replacePackagesFromJsonValue(
     for (raw.array.items) |entry| {
         if (entry != .object) return Error.InvalidPayload;
         const obj = entry.object;
+        if (!venom_metadata.runtimeKindMatchesRuntimeObject(obj)) return Error.InvalidPayload;
 
         const venom_id = getRequiredString(obj, "venom_id");
         try validateIdentifier(venom_id, 128);

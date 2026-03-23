@@ -76,6 +76,24 @@ pub fn inferRuntimeKindFromObject(obj: std.json.ObjectMap) []const u8 {
     return "native";
 }
 
+pub fn runtimeKindMatchesRuntimeObject(obj: std.json.ObjectMap) bool {
+    const declared = if (obj.get("runtime_kind")) |value|
+        if (value == .string and value.string.len > 0) value.string else return false
+    else
+        return true;
+
+    const runtime = obj.get("runtime") orelse return true;
+    if (runtime != .object) return false;
+    const runtime_type = if (runtime.object.get("type")) |value|
+        if (value == .string and value.string.len > 0) value.string else return false
+    else
+        "builtin";
+
+    if (std.mem.eql(u8, declared, "wasm")) return std.mem.eql(u8, runtime_type, "wasm");
+    if (std.mem.eql(u8, declared, "native")) return !std.mem.eql(u8, runtime_type, "wasm");
+    return false;
+}
+
 pub fn inferProviderScopeFromObject(
     allocator: std.mem.Allocator,
     obj: std.json.ObjectMap,
