@@ -1,5 +1,6 @@
 const std = @import("std");
 const venom_contracts = @import("venom_contracts.zig");
+const venom_metadata = @import("venom_metadata.zig");
 
 pub const LoadedVenom = struct {
     venom_id: []u8,
@@ -40,19 +41,22 @@ pub fn loadVenomManifestFile(
     defer allocator.free(package_id);
     const instance_id = try dupOptionalString(allocator, parsed.value.object, "instance_id", 128);
     defer if (instance_id) |value| allocator.free(value);
-    const provider_scope = try dupOptionalStringOrDefault(allocator, parsed.value.object, "provider_scope", "node_export", 64);
+    const provider_scope = try venom_metadata.inferProviderScopeFromObject(allocator, parsed.value.object, "node");
     defer allocator.free(provider_scope);
     const categories_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "categories", "[]");
     defer allocator.free(categories_json);
-    const host_roles_json = try parseOptionalArrayJsonFromNamesOrDefault(allocator, parsed.value.object, &.{ "host_roles", "hosts" }, "[\"node\"]");
+    const host_roles_json = try venom_metadata.encodeHostRolesJson(allocator, parsed.value.object, "[\"node\"]");
     defer allocator.free(host_roles_json);
-    const hosts_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "hosts", "[\"node\"]");
+    const hosts_json = if (parsed.value.object.get("hosts")) |_|
+        try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "hosts", "[\"node\"]")
+    else
+        try venom_metadata.encodeHostRolesJson(allocator, parsed.value.object, "[\"node\"]");
     defer allocator.free(hosts_json);
-    const binding_scopes_json = try parseOptionalArrayJsonFromNamesOrDefault(allocator, parsed.value.object, &.{ "binding_scopes", "projection_modes" }, "[\"workspace\"]");
+    const binding_scopes_json = try venom_metadata.encodeBindingScopesJson(allocator, parsed.value.object, "[\"workspace\"]");
     defer allocator.free(binding_scopes_json);
-    const projection_modes_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "projection_modes", "[\"node_export\"]");
+    const projection_modes_json = try venom_metadata.encodeProjectionModesJson(allocator, parsed.value.object, "node");
     defer allocator.free(projection_modes_json);
-    const runtime_kind = inferRuntimeKind(parsed.value.object);
+    const runtime_kind = venom_metadata.inferRuntimeKindFromObject(parsed.value.object);
     const requirements_json = try parseOptionalObjectJsonOrDefault(allocator, parsed.value.object, "requirements", "{}");
     defer allocator.free(requirements_json);
 
@@ -193,21 +197,6 @@ fn parseEndpoints(
     }
 }
 
-fn parseOptionalArrayJsonFromNamesOrDefault(
-    allocator: std.mem.Allocator,
-    obj: std.json.ObjectMap,
-    names: []const []const u8,
-    default_json: []const u8,
-) ![]u8 {
-    for (names) |name| {
-        if (obj.get(name)) |value| {
-            if (value != .array) return error.InvalidManifest;
-            return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(value, .{})});
-        }
-    }
-    return allocator.dupe(u8, default_json);
-}
-
 fn defaultSchemaJsonForManifest(obj: std.json.ObjectMap) []const u8 {
     if (obj.get("invoke_template") != null) return venom_contracts.namespace_service.descriptor_schema_json;
     if (obj.get("ops")) |ops_value| {
@@ -229,20 +218,6 @@ fn defaultSchemaJsonForManifest(obj: std.json.ObjectMap) []const u8 {
         }
     }
     return "{\"model\":\"namespace-mount\"}";
-}
-
-fn inferRuntimeKind(obj: std.json.ObjectMap) []const u8 {
-    if (obj.get("runtime_kind")) |value| {
-        if (value == .string and value.string.len > 0) return value.string;
-    }
-    if (obj.get("runtime")) |value| {
-        if (value == .object) {
-            if (value.object.get("type")) |runtime_type| {
-                if (runtime_type == .string and std.mem.eql(u8, runtime_type.string, "wasm")) return "wasm";
-            }
-        }
-    }
-    return "native";
 }
 
 fn parseMountsJson(

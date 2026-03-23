@@ -1,4 +1,5 @@
 const std = @import("std");
+const venom_metadata = @import("venom_metadata.zig");
 
 pub const Error = error{
     InvalidPayload,
@@ -91,37 +92,14 @@ pub fn replacePackagesFromJsonValue(
                 try encodeArrayValue(allocator, value)
             else
                 try allocator.dupe(u8, "[]"),
-            .host_roles_json = if (obj.get("host_roles")) |value|
-                try encodeArrayValue(allocator, value)
-            else if (obj.get("hosts")) |value|
-                try encodeArrayValue(allocator, value)
-            else
-                try allocator.dupe(u8, "[]"),
+            .host_roles_json = try venom_metadata.encodeHostRolesJson(allocator, obj, "[]"),
             .hosts_json = if (obj.get("hosts")) |value|
                 try encodeArrayValue(allocator, value)
-            else if (obj.get("host_roles")) |value|
-                try encodeArrayValue(allocator, value)
             else
-                try allocator.dupe(u8, "[]"),
-            .binding_scopes_json = if (obj.get("binding_scopes")) |value|
-                try encodeArrayValue(allocator, value)
-            else if (obj.get("projection_modes")) |value|
-                try encodeArrayValue(allocator, value)
-            else
-                try allocator.dupe(u8, "[]"),
-            .projection_modes_json = if (obj.get("projection_modes")) |value|
-                try encodeArrayValue(allocator, value)
-            else if (obj.get("binding_scopes")) |value|
-                try encodeArrayValue(allocator, value)
-            else
-                try allocator.dupe(u8, "[]"),
-            .runtime_kind = if (obj.get("runtime_kind")) |value| blk: {
-                if (value != .string or value.string.len == 0) return Error.InvalidPayload;
-                break :blk try allocator.dupe(u8, value.string);
-            } else if (obj.get("runtime")) |value|
-                try allocator.dupe(u8, inferRuntimeKindFromRuntimeValue(value))
-            else
-                try allocator.dupe(u8, "native"),
+                try venom_metadata.encodeHostRolesJson(allocator, obj, "[]"),
+            .binding_scopes_json = try venom_metadata.encodeBindingScopesJson(allocator, obj, "[]"),
+            .projection_modes_json = try venom_metadata.encodeProjectionModesJson(allocator, obj, "spiderweb"),
+            .runtime_kind = try allocator.dupe(u8, venom_metadata.inferRuntimeKindFromObject(obj)),
             .requirements_json = if (obj.get("requirements")) |value|
                 try encodeObjectValue(allocator, value)
             else
@@ -222,15 +200,6 @@ fn encodeArrayValue(allocator: std.mem.Allocator, raw: std.json.Value) ![]u8 {
 fn encodeObjectValue(allocator: std.mem.Allocator, raw: std.json.Value) ![]u8 {
     if (raw != .object) return Error.InvalidPayload;
     return std.fmt.allocPrint(allocator, "{f}", .{std.json.fmt(raw, .{})});
-}
-
-fn inferRuntimeKindFromRuntimeValue(raw: std.json.Value) []const u8 {
-    if (raw == .object) {
-        if (raw.object.get("type")) |value| {
-            if (value == .string and std.mem.eql(u8, value.string, "wasm")) return "wasm";
-        }
-    }
-    return "native";
 }
 
 fn validateIdentifier(value: []const u8, max_len: usize) !void {

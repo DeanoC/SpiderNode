@@ -1,4 +1,5 @@
 const std = @import("std");
+const venom_metadata = @import("venom_metadata.zig");
 
 pub const Error = error{
     InvalidPayload,
@@ -176,45 +177,19 @@ pub fn replaceVenomsFromJsonValue(
             .kind = try allocator.dupe(u8, kind),
             .version = try allocator.dupe(u8, version),
             .state = try allocator.dupe(u8, state),
-            .provider_scope = if (obj.get("provider_scope")) |provider_scope_value| blk: {
-                if (provider_scope_value != .string or provider_scope_value.string.len == 0) return Error.InvalidPayload;
-                break :blk try allocator.dupe(u8, provider_scope_value.string);
-            } else null,
+            .provider_scope = try venom_metadata.inferProviderScopeFromObject(allocator, obj, "node"),
             .categories_json = if (obj.get("categories")) |categories_value|
                 try encodeArrayValue(allocator, categories_value)
             else
                 try allocator.dupe(u8, "[]"),
-            .host_roles_json = if (obj.get("host_roles")) |host_roles_value|
-                try encodeArrayValue(allocator, host_roles_value)
-            else if (obj.get("hosts")) |hosts_value|
-                try encodeArrayValue(allocator, hosts_value)
-            else
-                try allocator.dupe(u8, "[]"),
+            .host_roles_json = try venom_metadata.encodeHostRolesJson(allocator, obj, "[]"),
             .hosts_json = if (obj.get("hosts")) |hosts_value|
                 try encodeArrayValue(allocator, hosts_value)
-            else if (obj.get("host_roles")) |host_roles_value|
-                try encodeArrayValue(allocator, host_roles_value)
             else
-                try allocator.dupe(u8, "[]"),
-            .binding_scopes_json = if (obj.get("binding_scopes")) |binding_scopes_value|
-                try encodeArrayValue(allocator, binding_scopes_value)
-            else if (obj.get("projection_modes")) |projection_modes_value|
-                try encodeArrayValue(allocator, projection_modes_value)
-            else
-                try allocator.dupe(u8, "[]"),
-            .projection_modes_json = if (obj.get("projection_modes")) |projection_modes_value|
-                try encodeArrayValue(allocator, projection_modes_value)
-            else if (obj.get("binding_scopes")) |binding_scopes_value|
-                try encodeArrayValue(allocator, binding_scopes_value)
-            else
-                try allocator.dupe(u8, "[]"),
-            .runtime_kind = if (obj.get("runtime_kind")) |runtime_kind_value| blk: {
-                if (runtime_kind_value != .string or runtime_kind_value.string.len == 0) return Error.InvalidPayload;
-                break :blk try allocator.dupe(u8, runtime_kind_value.string);
-            } else if (obj.get("runtime")) |runtime_value|
-                try allocator.dupe(u8, inferRuntimeKindFromRuntimeValue(runtime_value))
-            else
-                try allocator.dupe(u8, "native"),
+                try venom_metadata.encodeHostRolesJson(allocator, obj, "[]"),
+            .binding_scopes_json = try venom_metadata.encodeBindingScopesJson(allocator, obj, "[]"),
+            .projection_modes_json = try venom_metadata.encodeProjectionModesJson(allocator, obj, "node"),
+            .runtime_kind = try allocator.dupe(u8, venom_metadata.inferRuntimeKindFromObject(obj)),
             .requirements_json = if (obj.get("requirements")) |requirements_value|
                 try encodeObjectValue(allocator, requirements_value)
             else
@@ -372,15 +347,6 @@ fn getOptionalString(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = obj.get(name) orelse return null;
     if (value != .string) return null;
     return value.string;
-}
-
-fn inferRuntimeKindFromRuntimeValue(raw: std.json.Value) []const u8 {
-    if (raw == .object) {
-        if (raw.object.get("type")) |value| {
-            if (value == .string and std.mem.eql(u8, value.string, "wasm")) return "wasm";
-        }
-    }
-    return "native";
 }
 
 fn encodeCapabilitiesValue(allocator: std.mem.Allocator, raw: std.json.Value) ![]u8 {
