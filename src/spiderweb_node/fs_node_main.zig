@@ -2601,6 +2601,14 @@ fn renderVenomJsonWithRuntimeProbeState(
     }
     try jsonObjectPutValue(runtime_obj, "provider", .{ .object = provider_status });
 
+    var policy_status = std.json.ObjectMap.init(temp_allocator);
+    try jsonObjectPutI64(&policy_status, "health_check_interval_ms", clampU64ToI64(lifecycle.policy.health_check_interval_ms));
+    try jsonObjectPutI64(&policy_status, "restart_backoff_ms", clampU64ToI64(lifecycle.policy.restart_backoff_ms));
+    try jsonObjectPutI64(&policy_status, "restart_backoff_max_ms", clampU64ToI64(lifecycle.policy.restart_backoff_max_ms));
+    try jsonObjectPutI64(&policy_status, "max_consecutive_failures", lifecycle.policy.max_consecutive_failures);
+    try jsonObjectPutBool(&policy_status, "auto_disable_on_failures", lifecycle.policy.auto_disable_on_failures);
+    try jsonObjectPutValue(runtime_obj, "policy", .{ .object = policy_status });
+
     var supervision_status = std.json.ObjectMap.init(temp_allocator);
     try jsonObjectPutString(&supervision_status, "state", state_name);
     try jsonObjectPutBool(&supervision_status, "enabled", lifecycle.install.enabled);
@@ -4228,6 +4236,7 @@ test "fs_node_main: runtime probe state overlays service catalog json" {
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"supervision_status\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"install\":{\"installed\":true,\"enabled\":true,\"runtime_type\":\"native_proc\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"provider\":{\"state\":\"online\",\"running\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"policy\":{\"health_check_interval_ms\":10,\"restart_backoff_ms\":5,\"restart_backoff_max_ms\":20,\"max_consecutive_failures\":0,\"auto_disable_on_failures\":false}") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"state\":\"online\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"last_healthy_ms\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"last_error\":null") != null);
