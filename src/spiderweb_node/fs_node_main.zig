@@ -14,6 +14,7 @@ const venom_runtime_manager = @import("venom_runtime_manager.zig");
 const venom_contracts = @import("venom_contracts.zig");
 const venom_metadata = @import("venom_metadata.zig");
 const namespace_driver = @import("namespace_driver.zig");
+const macos_capability_venoms = @import("macos_capability_venoms.zig");
 const unified = @import("spider-protocol").unified;
 
 const default_state_path = ".spiderweb-fs-node-state.json";
@@ -134,7 +135,7 @@ const NodePairState = struct {
         self.request_id = try allocator.dupe(u8, request_id);
     }
 
-    fn setFromJoin(self: *NodePairState, allocator: std.mem.Allocator, join: NodeJoinPayload) !void {
+    fn setFromJoin(self: *NodePairState, allocator: std.mem.Allocator, join: NodeJoinPayload) void {
         if (self.node_id) |value| allocator.free(value);
         if (self.node_secret) |value| allocator.free(value);
         if (self.lease_token) |value| allocator.free(value);
@@ -2050,12 +2051,11 @@ fn attemptPairingOnce(
 
             switch (result) {
                 .payload_json => |payload_json| {
-                    var joined = parseNodeJoinPayload(allocator, payload_json) catch |err| {
+                    const joined = parseNodeJoinPayload(allocator, payload_json) catch |err| {
                         std.log.warn("node invite join payload invalid: {s}", .{@errorName(err)});
                         return;
                     };
-                    errdefer joined.deinit(allocator);
-                    try state.setFromJoin(allocator, joined);
+                    state.setFromJoin(allocator, joined);
                     std.log.info("node paired via invite: {s}", .{state.node_id.?});
                 },
                 .remote_error => |remote| {
@@ -2144,12 +2144,11 @@ fn attemptPairingOnce(
 
             switch (approve_result) {
                 .payload_json => |payload_json| {
-                    var joined = parseNodeJoinPayload(allocator, payload_json) catch |err| {
+                    const joined = parseNodeJoinPayload(allocator, payload_json) catch |err| {
                         std.log.warn("node join approval payload invalid: {s}", .{@errorName(err)});
                         return;
                     };
-                    errdefer joined.deinit(allocator);
-                    try state.setFromJoin(allocator, joined);
+                    state.setFromJoin(allocator, joined);
                     std.log.info("node paired via join-request approval: {s}", .{state.node_id.?});
                 },
                 .remote_error => |remote| {
@@ -2288,25 +2287,22 @@ fn tryApplyLeaseRefresh(
     state: *NodePairState,
     join: NodeJoinPayload,
 ) !void {
-    errdefer {
-        var cleanup = join;
-        cleanup.deinit(allocator);
-    }
-
     const old_id = state.node_id;
     const old_secret = state.node_secret;
     if (old_id == null or old_secret == null) {
-        try state.setFromJoin(allocator, join);
+        state.setFromJoin(allocator, join);
         try saveNodePairState(allocator, state_path, state);
         return;
     }
 
     if (!std.mem.eql(u8, old_id.?, join.node_id) or !std.mem.eql(u8, old_secret.?, join.node_secret)) {
         std.log.warn("lease refresh returned mismatched node identity; ignoring update", .{});
+        var cleanup = join;
+        cleanup.deinit(allocator);
         return;
     }
 
-    try state.setFromJoin(allocator, join);
+    state.setFromJoin(allocator, join);
     try saveNodePairState(allocator, state_path, state);
 }
 
@@ -2359,8 +2355,7 @@ fn refreshNodeLeaseOnce(
     defer result.deinit(allocator);
     switch (result) {
         .payload_json => |payload_json| {
-            var joined = try parseNodeJoinPayload(allocator, payload_json);
-            errdefer joined.deinit(allocator);
+            const joined = try parseNodeJoinPayload(allocator, payload_json);
             try tryApplyLeaseRefresh(allocator, state_path, &state, joined);
             try upsertNodeVenomCatalog(allocator, connect, venom_registry, &state);
         },
@@ -3855,6 +3850,28 @@ test "fs_node_main: native_proc namespace export is built only when executable p
     try std.testing.expectEqualStrings("invoke", wasm_spec.wasm_entrypoint.?);
     try std.testing.expectEqual(@as(?u64, 1234), wasm_spec.fuel);
     try std.testing.expectEqual(@as(?u64, 65536), wasm_spec.max_memory_bytes);
+}
+
+test "fs_node_main: computer and browser manifests build namespace exports" {
+    const allocator = std.testing.allocator;
+
+    const computer_manifest = try macos_capability_venoms.renderComputerManifestJson(allocator, "./spiderweb-computer-driver");
+    defer allocator.free(computer_manifest);
+    const computer_export = try buildNamespaceVenomExportFromVenomJson(allocator, computer_manifest);
+    try std.testing.expect(computer_export != null);
+    var owned_computer = computer_export.?;
+    defer owned_computer.deinit(allocator);
+    try std.testing.expectEqualStrings("computer-main", owned_computer.name);
+    try std.testing.expectEqualStrings("./spiderweb-computer-driver", owned_computer.executable_path.?);
+
+    const browser_manifest = try macos_capability_venoms.renderBrowserManifestJson(allocator, "./spiderweb-browser-driver");
+    defer allocator.free(browser_manifest);
+    const browser_export = try buildNamespaceVenomExportFromVenomJson(allocator, browser_manifest);
+    try std.testing.expect(browser_export != null);
+    var owned_browser = browser_export.?;
+    defer owned_browser.deinit(allocator);
+    try std.testing.expectEqualStrings("browser-main", owned_browser.name);
+    try std.testing.expectEqualStrings("./spiderweb-browser-driver", owned_browser.executable_path.?);
 }
 
 test "fs_node_main: runtime validator rejects unknown runtime type" {

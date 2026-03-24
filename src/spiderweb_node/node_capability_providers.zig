@@ -167,11 +167,6 @@ pub const Registry = struct {
         try out.appendSlice(allocator, ",\"venoms\":[");
         var venom_count: usize = 0;
 
-        if (self.enable_fs_venom) {
-            try appendFsVenom(self, allocator, &out, node_id);
-            venom_count += 1;
-        }
-
         for (self.terminal_ids.items) |terminal_id| {
             if (venom_count > 0) try out.append(allocator, ',');
             try appendTerminalVenom(allocator, &out, node_id, terminal_id);
@@ -347,7 +342,7 @@ fn jsonEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-test "node_capability_providers: build service upsert payload includes fs and terminal" {
+test "node_capability_providers: build service upsert payload includes workspace capability venoms only" {
     const allocator = std.testing.allocator;
     var registry = try Registry.init(allocator, .{
         .enable_fs_venom = true,
@@ -373,14 +368,10 @@ test "node_capability_providers: build service upsert payload includes fs and te
     );
     defer allocator.free(payload);
 
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"venom_id\":\"fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"venom_id\":\"fs\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"venom_id\":\"terminal-1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"venom_id\":\"terminal-2\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"export_count\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"site\":\"home-lab\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"mounts\":[{\"mount_id\":\"fs\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"runtime\":{\"type\":\"builtin\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, payload, "\"permissions\":{\"default\":\"deny-by-default\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"ops\":{\"model\":\"namespace\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"schema\":{\"model\":\"terminal-driver-v1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, payload, "\"invoke_template\":{\"tool_name\":\"terminal_exec\"") != null);

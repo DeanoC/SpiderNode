@@ -1,6 +1,7 @@
 const std = @import("std");
 const venom_contracts = @import("venom_contracts.zig");
 const venom_metadata = @import("venom_metadata.zig");
+const macos_capability_venoms = @import("macos_capability_venoms.zig");
 
 pub const LoadedVenom = struct {
     venom_id: []u8,
@@ -517,6 +518,45 @@ test "venom_manifest: service-like manifest defaults to namespace service schema
 
     try std.testing.expect(std.mem.indexOf(u8, service.venom_json, "\"schema\":{\"model\":\"namespace-service-v1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, service.venom_json, "\"invoke_template\":{}") != null);
+}
+
+test "venom_manifest: loads computer and browser capability manifests" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const computer_manifest = try macos_capability_venoms.renderComputerManifestJson(allocator, "./spiderweb-computer-driver");
+    defer allocator.free(computer_manifest);
+    try tmp.dir.writeFile(.{
+        .sub_path = "computer.json",
+        .data = computer_manifest,
+    });
+
+    const browser_manifest = try macos_capability_venoms.renderBrowserManifestJson(allocator, "./spiderweb-browser-driver");
+    defer allocator.free(browser_manifest);
+    try tmp.dir.writeFile(.{
+        .sub_path = "browser.json",
+        .data = browser_manifest,
+    });
+
+    const computer_abs = try tmp.dir.realpathAlloc(allocator, "computer.json");
+    defer allocator.free(computer_abs);
+    const browser_abs = try tmp.dir.realpathAlloc(allocator, "browser.json");
+    defer allocator.free(browser_abs);
+
+    const loaded_computer = try loadVenomManifestFile(allocator, computer_abs, "node-55");
+    try std.testing.expect(loaded_computer != null);
+    var computer = loaded_computer.?;
+    defer computer.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, computer.venom_json, "\"package_id\":\"computer\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, computer.venom_json, "\"/nodes/node-55/venoms/computer-main\"") != null);
+
+    const loaded_browser = try loadVenomManifestFile(allocator, browser_abs, "node-55");
+    try std.testing.expect(loaded_browser != null);
+    var browser = loaded_browser.?;
+    defer browser.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, browser.venom_json, "\"package_id\":\"browser\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, browser.venom_json, "\"/nodes/node-55/venoms/browser-main\"") != null);
 }
 
 test "venom_manifest: accepts venom_id alias and emits venom ABI metadata" {

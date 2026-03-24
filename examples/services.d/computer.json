@@ -1,0 +1,73 @@
+{
+  "enabled": true,
+  "venom_id": "computer-main",
+  "package_id": "computer",
+  "kind": "computer",
+  "version": "1",
+  "state": "online",
+  "categories": ["desktop", "automation", "macos"],
+  "host_roles": ["node"],
+  "binding_scopes": ["workspace"],
+  "runtime_kind": "native",
+  "requirements": {
+    "host_capabilities": ["macos_accessibility", "screen_capture"]
+  },
+  "endpoints": [
+    "/nodes/{node_id}/venoms/computer-main"
+  ],
+  "mounts": [
+    {
+      "mount_id": "computer-main",
+      "mount_path": "/nodes/{node_id}/venoms/computer-main",
+      "state": "online"
+    }
+  ],
+  "capabilities": {
+    "invoke": true,
+    "discoverable": true,
+    "observe": true,
+    "act": true,
+    "operations": ["observe", "act"],
+    "device": "desktop"
+  },
+  "ops": {
+    "model": "namespace",
+    "invoke": "control/invoke.json",
+    "paths": {
+      "invoke": "control/invoke.json"
+    }
+  },
+  "runtime": {
+    "type": "native_proc",
+    "abi": "namespace-driver-v1",
+    "executable_path": "./spiderweb-computer-driver",
+    "timeout_ms": 60000
+  },
+  "permissions": {
+    "default": "deny-by-default",
+    "allow_roles": ["admin", "user"],
+    "scope": "workspace",
+    "requires_user_consent": true,
+    "platform": "macos"
+  },
+  "schema": {
+    "model": "computer-observe-act-v1",
+    "control": {
+      "invoke": "control/invoke.json"
+    },
+    "result": "result.json",
+    "status": "status.json",
+    "health": "health.json",
+    "artifacts": {
+      "observation": "artifacts/last_observation.json",
+      "screenshot": "artifacts/last_screenshot.png"
+    }
+  },
+  "invoke_template": {
+    "op": "observe",
+    "arguments": {
+      "include_screenshot": true
+    }
+  },
+  "help_md": "macOS desktop automation driver. Write JSON payloads to control/invoke.json with op observe or act."
+}
