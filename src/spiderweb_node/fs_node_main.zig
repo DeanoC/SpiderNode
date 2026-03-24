@@ -135,7 +135,7 @@ const NodePairState = struct {
         self.request_id = try allocator.dupe(u8, request_id);
     }
 
-    fn setFromJoin(self: *NodePairState, allocator: std.mem.Allocator, join: NodeJoinPayload) !void {
+    fn setFromJoin(self: *NodePairState, allocator: std.mem.Allocator, join: NodeJoinPayload) void {
         if (self.node_id) |value| allocator.free(value);
         if (self.node_secret) |value| allocator.free(value);
         if (self.lease_token) |value| allocator.free(value);
@@ -2051,12 +2051,11 @@ fn attemptPairingOnce(
 
             switch (result) {
                 .payload_json => |payload_json| {
-                    var joined = parseNodeJoinPayload(allocator, payload_json) catch |err| {
+                    const joined = parseNodeJoinPayload(allocator, payload_json) catch |err| {
                         std.log.warn("node invite join payload invalid: {s}", .{@errorName(err)});
                         return;
                     };
-                    errdefer joined.deinit(allocator);
-                    try state.setFromJoin(allocator, joined);
+                    state.setFromJoin(allocator, joined);
                     std.log.info("node paired via invite: {s}", .{state.node_id.?});
                 },
                 .remote_error => |remote| {
@@ -2145,12 +2144,11 @@ fn attemptPairingOnce(
 
             switch (approve_result) {
                 .payload_json => |payload_json| {
-                    var joined = parseNodeJoinPayload(allocator, payload_json) catch |err| {
+                    const joined = parseNodeJoinPayload(allocator, payload_json) catch |err| {
                         std.log.warn("node join approval payload invalid: {s}", .{@errorName(err)});
                         return;
                     };
-                    errdefer joined.deinit(allocator);
-                    try state.setFromJoin(allocator, joined);
+                    state.setFromJoin(allocator, joined);
                     std.log.info("node paired via join-request approval: {s}", .{state.node_id.?});
                 },
                 .remote_error => |remote| {
@@ -2289,25 +2287,22 @@ fn tryApplyLeaseRefresh(
     state: *NodePairState,
     join: NodeJoinPayload,
 ) !void {
-    errdefer {
-        var cleanup = join;
-        cleanup.deinit(allocator);
-    }
-
     const old_id = state.node_id;
     const old_secret = state.node_secret;
     if (old_id == null or old_secret == null) {
-        try state.setFromJoin(allocator, join);
+        state.setFromJoin(allocator, join);
         try saveNodePairState(allocator, state_path, state);
         return;
     }
 
     if (!std.mem.eql(u8, old_id.?, join.node_id) or !std.mem.eql(u8, old_secret.?, join.node_secret)) {
         std.log.warn("lease refresh returned mismatched node identity; ignoring update", .{});
+        var cleanup = join;
+        cleanup.deinit(allocator);
         return;
     }
 
-    try state.setFromJoin(allocator, join);
+    state.setFromJoin(allocator, join);
     try saveNodePairState(allocator, state_path, state);
 }
 
@@ -2360,8 +2355,7 @@ fn refreshNodeLeaseOnce(
     defer result.deinit(allocator);
     switch (result) {
         .payload_json => |payload_json| {
-            var joined = try parseNodeJoinPayload(allocator, payload_json);
-            errdefer joined.deinit(allocator);
+            const joined = try parseNodeJoinPayload(allocator, payload_json);
             try tryApplyLeaseRefresh(allocator, state_path, &state, joined);
             try upsertNodeVenomCatalog(allocator, connect, venom_registry, &state);
         },
