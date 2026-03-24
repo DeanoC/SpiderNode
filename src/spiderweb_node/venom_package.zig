@@ -9,6 +9,7 @@ pub const VenomPackage = struct {
     venom_id: []u8,
     kind: []u8,
     version: []u8,
+    enabled: bool = true,
     categories_json: []u8,
     host_roles_json: []u8,
     binding_scopes_json: []u8,
@@ -85,6 +86,7 @@ pub fn replacePackagesFromJsonValue(
             .venom_id = try allocator.dupe(u8, venom_id),
             .kind = try allocator.dupe(u8, kind),
             .version = try allocator.dupe(u8, version),
+            .enabled = parseOptionalBool(obj, "enabled") orelse true,
             .categories_json = if (obj.get("categories")) |value|
                 try encodeArrayValue(allocator, value)
             else
@@ -144,11 +146,12 @@ pub fn appendPackageJson(
     defer allocator.free(escaped_version);
 
     try out.writer(allocator).print(
-        "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}",
+        "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":{},\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}",
         .{
             escaped_id,
             escaped_kind,
             escaped_version,
+            package.enabled,
             package.categories_json,
             package.host_roles_json,
             package.binding_scopes_json,
@@ -180,6 +183,12 @@ fn getOptionalString(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = obj.get(name) orelse return null;
     if (value != .string) return null;
     return value.string;
+}
+
+fn parseOptionalBool(obj: std.json.ObjectMap, name: []const u8) ?bool {
+    const value = obj.get(name) orelse return null;
+    if (value != .bool) return null;
+    return value.bool;
 }
 
 fn encodeArrayValue(allocator: std.mem.Allocator, raw: std.json.Value) ![]u8 {
@@ -250,6 +259,7 @@ test "venom_package: parses and re-renders packages array" {
 
     try std.testing.expectEqual(@as(usize, 1), packages.items.len);
     try std.testing.expectEqualStrings("git", packages.items[0].venom_id);
+    try std.testing.expect(packages.items[0].enabled);
     try std.testing.expect(std.mem.indexOf(u8, packages.items[0].host_roles_json, "\"spiderweb\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, packages.items[0].binding_scopes_json, "\"workspace\"") != null);
     try std.testing.expectEqualStrings("native", packages.items[0].runtime_kind);
@@ -261,6 +271,7 @@ test "venom_package: parses and re-renders packages array" {
     try out.append(allocator, ']');
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"venom_id\":\"git\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"enabled\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"host_roles\":[\"spiderweb\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"binding_scopes\":[\"workspace\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"runtime_kind\":\"native\"") != null);
