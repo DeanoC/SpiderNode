@@ -159,6 +159,35 @@ pub fn build(b: *std.Build) void {
     test_mod.addImport("spiderweb_node", spiderweb_node_mod);
     const tests = b.addTest(.{ .root_module = test_mod });
     const run_tests = b.addRunArtifact(tests);
+
+    const computer_driver_test_mod = b.createModule(.{
+        .root_source_file = b.path("examples/drivers/computer_driver.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    computer_driver_test_mod.addImport("spiderweb_node", spiderweb_node_mod);
+    const computer_driver_tests = b.addTest(.{ .root_module = computer_driver_test_mod });
+    computer_driver_tests.linkLibC();
+    if (target.result.os.tag == .macos) {
+        computer_driver_tests.linkFramework("ApplicationServices");
+    }
+    const run_computer_driver_tests = b.addRunArtifact(computer_driver_tests);
+
+    const browser_driver_test_mod = b.createModule(.{
+        .root_source_file = b.path("examples/drivers/browser_driver.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    browser_driver_test_mod.addImport("spiderweb_node", spiderweb_node_mod);
+    const browser_driver_tests = b.addTest(.{ .root_module = browser_driver_test_mod });
+    browser_driver_tests.linkLibC();
+    if (target.result.os.tag == .macos) {
+        browser_driver_tests.linkFramework("ApplicationServices");
+    }
+    const run_browser_driver_tests = b.addRunArtifact(browser_driver_tests);
+
     const test_step = b.step("test", "Run node wrapper tests");
     test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_computer_driver_tests.step);
+    test_step.dependOn(&run_browser_driver_tests.step);
 }

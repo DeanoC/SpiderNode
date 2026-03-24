@@ -330,13 +330,19 @@ fn focusWindow(allocator: std.mem.Allocator, app_name: []const u8, window_title:
 fn clickFrontButton(allocator: std.mem.Allocator, button_title: []const u8) !void {
     const escaped_title = try appleScriptEscape(allocator, button_title);
     defer allocator.free(escaped_title);
-    const line = try std.fmt.allocPrint(
+    const line1 = try allocator.dupe(u8, "tell application \"System Events\"");
+    defer allocator.free(line1);
+    const line2 = try allocator.dupe(u8, "set targetProc to first application process whose frontmost is true");
+    defer allocator.free(line2);
+    const line3 = try std.fmt.allocPrint(
         allocator,
-        "tell application \"System Events\" to click first button of first window of first application process whose frontmost is true and name is \"{s}\"",
+        "click first button of first window of targetProc whose name is \"{s}\"",
         .{escaped_title},
     );
-    defer allocator.free(line);
-    try runAppleScriptExpectOk(allocator, &.{line});
+    defer allocator.free(line3);
+    const line4 = try allocator.dupe(u8, "end tell");
+    defer allocator.free(line4);
+    try runAppleScriptExpectOk(allocator, &.{ line1, line2, line3, line4 });
 }
 
 fn typeText(allocator: std.mem.Allocator, text: []const u8) !void {
@@ -546,4 +552,44 @@ fn fatal(msg: []const u8) noreturn {
     std.fs.File.stderr().writeAll(msg) catch {};
     std.fs.File.stderr().writeAll("\n") catch {};
     std.process.exit(2);
+}
+
+test "computer_driver: parse act payload requires action-specific fields" {
+    const allocator = std.testing.allocator;
+
+    var valid = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"op\":\"act\",\"arguments\":{\"action\":\"primary_tap\",\"button_title\":\"Press Fixture Button\"}}",
+        .{},
+    );
+    defer valid.deinit();
+    var parsed = try parseActArgs(allocator, valid.value.object);
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(Action.primary_tap, parsed.action);
+    try std.testing.expectEqualStrings("Press Fixture Button", parsed.button_title.?);
+
+    var invalid = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"op\":\"act\",\"arguments\":{\"action\":\"primary_tap\"}}",
+        .{},
+    );
+    defer invalid.deinit();
+    try std.testing.expectError(error.InvalidPayload, parseActArgs(allocator, invalid.value.object));
+}
+
+test "computer_driver: parse observe payload honors include_screenshot" {
+    const allocator = std.testing.allocator;
+    _ = allocator;
+
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        "{\"op\":\"observe\",\"arguments\":{\"include_screenshot\":false}}",
+        .{},
+    );
+    defer parsed.deinit();
+    const args = try parseObserveArgs(std.testing.allocator, parsed.value.object);
+    try std.testing.expect(!args.include_screenshot);
 }

@@ -526,3 +526,41 @@ fn fatal(msg: []const u8) noreturn {
     std.fs.File.stderr().writeAll("\n") catch {};
     std.process.exit(2);
 }
+
+test "browser_driver: parse act payload requires selector for click" {
+    const allocator = std.testing.allocator;
+
+    var valid = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"op\":\"act\",\"arguments\":{\"action\":\"click\",\"selector\":\"#fixture-button\"}}",
+        .{},
+    );
+    defer valid.deinit();
+    var parsed = try parseActArgs(allocator, valid.value.object);
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(Action.click, parsed.action);
+    try std.testing.expectEqualStrings("#fixture-button", parsed.selector.?);
+
+    var invalid = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"op\":\"act\",\"arguments\":{\"action\":\"click\"}}",
+        .{},
+    );
+    defer invalid.deinit();
+    try std.testing.expectError(error.InvalidPayload, parseActArgs(allocator, invalid.value.object));
+}
+
+test "browser_driver: parse observe payload honors include flags" {
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        "{\"op\":\"observe\",\"arguments\":{\"include_dom\":false,\"include_screenshot\":false}}",
+        .{},
+    );
+    defer parsed.deinit();
+    const args = try parseObserveArgs(parsed.value.object);
+    try std.testing.expect(!args.include_dom);
+    try std.testing.expect(!args.include_screenshot);
+}
