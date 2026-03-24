@@ -125,12 +125,12 @@ pub fn loadVenomManifestFile(
         defer allocator.free(escaped_help);
         break :blk try std.fmt.allocPrint(
             allocator,
-            "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s},\"help_md\":\"{s}\"{s}}}",
+            "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":true,\"state\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s},\"help_md\":\"{s}\"{s}}}",
             .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, categories_json, host_roles_json, binding_scopes_json, runtime_kind, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, escaped_help, instance_fragment },
         );
     } else try std.fmt.allocPrint(
         allocator,
-        "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s}{s}}}",
+        "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":true,\"state\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s}{s}}}",
         .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, categories_json, host_roles_json, binding_scopes_json, runtime_kind, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, instance_fragment },
     );
 

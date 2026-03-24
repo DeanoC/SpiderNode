@@ -2553,6 +2553,7 @@ fn renderVenomJsonWithRuntimeProbeState(
 
     const state_name = venomStateJsonName(state);
     const root = &parsed.value.object;
+    try jsonObjectPutBool(root, "enabled", lifecycle.install.enabled);
     try jsonObjectPutString(root, "state", state_name);
 
     if (root.getPtr("mounts")) |mounts| {
@@ -4233,6 +4234,7 @@ test "fs_node_main: runtime probe state overlays service catalog json" {
         &runtime_manager,
     );
     try std.testing.expect(first_overlay);
+    try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"enabled\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"supervision_status\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"install\":{\"installed\":true,\"enabled\":true,\"runtime_type\":\"native_proc\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"provider\":{\"state\":\"online\",\"running\":true") != null);
@@ -4259,6 +4261,18 @@ test "fs_node_main: runtime probe state overlays service catalog json" {
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"provider\":{\"state\":\"degraded\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"last_error\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"last_transition_ms\":") != null);
+
+    try runtime_manager.disableVenom("svc-runtime-overlay");
+    const disabled_overlay = try applyRuntimeManagerStateToServiceRegistry(
+        allocator,
+        &registry,
+        &runtime_manager,
+    );
+    try std.testing.expect(disabled_overlay);
+    try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"enabled\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"install\":{\"installed\":true,\"enabled\":false") != null);
+
+    try runtime_manager.enableVenom("svc-runtime-overlay");
 
     try temp.dir.writeFile(.{
         .sub_path = "probe-driver",

@@ -11,6 +11,7 @@ pub const VenomDescriptor = struct {
     instance_id: ?[]u8 = null,
     kind: []u8,
     version: []u8,
+    enabled: bool = true,
     state: []u8,
     categories_json: []u8,
     host_roles_json: []u8,
@@ -70,6 +71,7 @@ pub fn venomDigest64(service: VenomDescriptor) u64 {
     }
     hashField(&hasher, service.kind);
     hashField(&hasher, service.version);
+    hasher.update(&.{if (service.enabled) 1 else 0});
     hashField(&hasher, service.state);
     hashField(&hasher, service.categories_json);
     hashField(&hasher, service.host_roles_json);
@@ -163,6 +165,7 @@ pub fn replaceVenomsFromJsonValue(
             } else null,
             .kind = try allocator.dupe(u8, kind),
             .version = try allocator.dupe(u8, version),
+            .enabled = parseOptionalBool(obj, "enabled") orelse true,
             .state = try allocator.dupe(u8, state),
             .categories_json = if (obj.get("categories")) |categories_value|
                 try encodeArrayValue(allocator, categories_value)
@@ -255,8 +258,8 @@ pub fn appendVenomJson(
         try out.writer(allocator).print(",\"instance_id\":\"{s}\"", .{escaped_instance_id});
     }
     try out.writer(allocator).print(
-        ",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\"",
-        .{ escaped_kind, escaped_version, escaped_state },
+        ",\"kind\":\"{s}\",\"version\":\"{s}\",\"enabled\":{},\"state\":\"{s}\"",
+        .{ escaped_kind, escaped_version, service.enabled, escaped_state },
     );
     try out.writer(allocator).print(
         ",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":[",
@@ -321,6 +324,12 @@ fn getOptionalString(obj: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = obj.get(name) orelse return null;
     if (value != .string) return null;
     return value.string;
+}
+
+fn parseOptionalBool(obj: std.json.ObjectMap, name: []const u8) ?bool {
+    const value = obj.get(name) orelse return null;
+    if (value != .bool) return null;
+    return value.bool;
 }
 
 fn encodeCapabilitiesValue(allocator: std.mem.Allocator, raw: std.json.Value) ![]u8 {
@@ -408,7 +417,7 @@ test "venom_catalog: parses and re-renders venoms array" {
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "[{\"venom_id\":\"fs\",\"package_id\":\"fs\",\"instance_id\":\"local:fs\",\"kind\":\"fs\",\"version\":\"1\",\"state\":\"online\",\"categories\":[\"filesystem\"],\"host_roles\":[\"node\"],\"binding_scopes\":[\"node\"],\"runtime_kind\":\"native\",\"requirements\":{},\"endpoints\":[\"/nodes/node-1/fs\"],\"capabilities\":{\"rw\":true}}]",
+        "[{\"venom_id\":\"fs\",\"package_id\":\"fs\",\"instance_id\":\"local:fs\",\"kind\":\"fs\",\"version\":\"1\",\"enabled\":true,\"state\":\"online\",\"categories\":[\"filesystem\"],\"host_roles\":[\"node\"],\"binding_scopes\":[\"node\"],\"runtime_kind\":\"native\",\"requirements\":{},\"endpoints\":[\"/nodes/node-1/fs\"],\"capabilities\":{\"rw\":true}}]",
         .{},
     );
     defer parsed.deinit();
@@ -422,6 +431,7 @@ test "venom_catalog: parses and re-renders venoms array" {
     defer out.deinit(allocator);
     try appendVenomJson(allocator, &out, services.items[0]);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"venom_id\":\"fs\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"enabled\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"package_id\":\"fs\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"host_roles\":[\"node\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"binding_scopes\":[\"node\"]") != null);
@@ -441,7 +451,7 @@ test "venom_catalog: accepts optional namespace metadata fields" {
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "[{\"venom_id\":\"camera-main\",\"package_id\":\"camera-main\",\"instance_id\":\"node-1:camera-main\",\"kind\":\"camera\",\"version\":\"1\",\"state\":\"online\",\"categories\":[\"camera\",\"edge\"],\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{\"host_capabilities\":[\"namespace_driver\"]},\"endpoints\":[\"/nodes/node-1/camera\"],\"capabilities\":{\"still\":true},\"mounts\":[{\"mount_id\":\"camera-main\",\"mount_path\":\"/nodes/node-1/camera\",\"state\":\"online\"}],\"ops\":{\"model\":\"namespace\"},\"runtime\":{\"type\":\"native_proc\"},\"permissions\":{\"default\":\"deny-by-default\"},\"schema\":{\"model\":\"namespace-mount\"},\"invoke_template\":{\"op\":\"capture\"},\"help_md\":\"Camera driver\"}]",
+        "[{\"venom_id\":\"camera-main\",\"package_id\":\"camera-main\",\"instance_id\":\"node-1:camera-main\",\"kind\":\"camera\",\"version\":\"1\",\"enabled\":false,\"state\":\"online\",\"categories\":[\"camera\",\"edge\"],\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"requirements\":{\"host_capabilities\":[\"namespace_driver\"]},\"endpoints\":[\"/nodes/node-1/camera\"],\"capabilities\":{\"still\":true},\"mounts\":[{\"mount_id\":\"camera-main\",\"mount_path\":\"/nodes/node-1/camera\",\"state\":\"online\"}],\"ops\":{\"model\":\"namespace\"},\"runtime\":{\"type\":\"native_proc\"},\"permissions\":{\"default\":\"deny-by-default\"},\"schema\":{\"model\":\"namespace-mount\"},\"invoke_template\":{\"op\":\"capture\"},\"help_md\":\"Camera driver\"}]",
         .{},
     );
     defer parsed.deinit();
@@ -450,6 +460,7 @@ test "venom_catalog: accepts optional namespace metadata fields" {
     defer deinitVenoms(allocator, &services);
     try replaceVenomsFromJsonValue(allocator, &services, parsed.value);
     try std.testing.expectEqual(@as(usize, 1), services.items.len);
+    try std.testing.expect(!services.items[0].enabled);
     try std.testing.expectEqualStrings("camera-main", services.items[0].package_id.?);
     try std.testing.expect(std.mem.indexOf(u8, services.items[0].host_roles_json, "\"node\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, services.items[0].binding_scopes_json, "\"workspace\"") != null);
@@ -462,6 +473,7 @@ test "venom_catalog: accepts optional namespace metadata fields" {
     var out = std.ArrayListUnmanaged(u8){};
     defer out.deinit(allocator);
     try appendVenomJson(allocator, &out, services.items[0]);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"enabled\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"provider_scope\":") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"projection_modes\":") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"hosts\":") == null);
