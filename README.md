@@ -1,8 +1,8 @@
 # SpiderNode
 
-Standalone node runtime binaries for the Acheron/Spiderweb ecosystem.
+Standalone node runtime binaries for the Spiderweb filesystem and capability ecosystem.
 
-SpiderNode exists so operators can run node daemons on Linux/macOS/Windows without cloning the full server repo. It exports filesystem roots and services that Spiderweb mounts into the unified namespace.
+SpiderNode exists so operators can run node daemons on Linux/macOS/Windows without cloning the full server repo. It exports filesystem roots and node-hosted capabilities that Spiderweb mounts into the unified namespace.
 
 The node runtime sources now live in this repo under `src/spiderweb_node/`. `SpiderProtocol` remains the shared protocol/runtime substrate dependency, while SpiderNode owns the concrete node daemon and service runtime implementation.
 
