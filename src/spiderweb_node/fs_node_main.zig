@@ -14,6 +14,7 @@ const venom_runtime_manager = @import("venom_runtime_manager.zig");
 const venom_contracts = @import("venom_contracts.zig");
 const venom_metadata = @import("venom_metadata.zig");
 const namespace_driver = @import("namespace_driver.zig");
+const macos_capability_venoms = @import("macos_capability_venoms.zig");
 const unified = @import("spider-protocol").unified;
 
 const default_state_path = ".spiderweb-fs-node-state.json";
@@ -3855,6 +3856,28 @@ test "fs_node_main: native_proc namespace export is built only when executable p
     try std.testing.expectEqualStrings("invoke", wasm_spec.wasm_entrypoint.?);
     try std.testing.expectEqual(@as(?u64, 1234), wasm_spec.fuel);
     try std.testing.expectEqual(@as(?u64, 65536), wasm_spec.max_memory_bytes);
+}
+
+test "fs_node_main: computer and browser manifests build namespace exports" {
+    const allocator = std.testing.allocator;
+
+    const computer_manifest = try macos_capability_venoms.renderComputerManifestJson(allocator, "./spiderweb-computer-driver");
+    defer allocator.free(computer_manifest);
+    const computer_export = try buildNamespaceVenomExportFromVenomJson(allocator, computer_manifest);
+    try std.testing.expect(computer_export != null);
+    var owned_computer = computer_export.?;
+    defer owned_computer.deinit(allocator);
+    try std.testing.expectEqualStrings("computer-main", owned_computer.name);
+    try std.testing.expectEqualStrings("./spiderweb-computer-driver", owned_computer.executable_path.?);
+
+    const browser_manifest = try macos_capability_venoms.renderBrowserManifestJson(allocator, "./spiderweb-browser-driver");
+    defer allocator.free(browser_manifest);
+    const browser_export = try buildNamespaceVenomExportFromVenomJson(allocator, browser_manifest);
+    try std.testing.expect(browser_export != null);
+    var owned_browser = browser_export.?;
+    defer owned_browser.deinit(allocator);
+    try std.testing.expectEqualStrings("browser-main", owned_browser.name);
+    try std.testing.expectEqualStrings("./spiderweb-browser-driver", owned_browser.executable_path.?);
 }
 
 test "fs_node_main: runtime validator rejects unknown runtime type" {

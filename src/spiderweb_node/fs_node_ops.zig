@@ -10,6 +10,7 @@ const credential_store = @import("credential_store.zig");
 const service_runtime_host = @import("service_runtime_host.zig");
 const zwasm_runtime = @import("zwasm_runtime.zig");
 const venom_contracts = @import("venom_contracts.zig");
+const macos_capability_venoms = @import("macos_capability_venoms.zig");
 
 const node_id_export_shift: u6 = 48;
 const node_id_export_mask: u64 = 0xFFFF_0000_0000_0000;
@@ -116,6 +117,17 @@ const NamespaceVenomConfig = struct {
         if (self.help_md) |value| allocator.free(value);
         if (self.schema_json) |value| allocator.free(value);
         if (self.invoke_template_json) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+const NamespaceInvocationAugmentations = struct {
+    status_json: ?[]u8 = null,
+    health_json: ?[]u8 = null,
+
+    fn deinit(self: *NamespaceInvocationAugmentations, allocator: std.mem.Allocator) void {
+        if (self.status_json) |value| allocator.free(value);
+        if (self.health_json) |value| allocator.free(value);
         self.* = undefined;
     }
 };
@@ -1185,6 +1197,9 @@ pub const NodeOps = struct {
                 try self.allocator.dupe(u8, "{\"state\":\"offline\",\"enabled\":false,\"venom_id\":\"unbound\",\"runtime\":\"none\"}");
             defer self.allocator.free(health_json);
             _ = try self.namespaceCreateNode(export_index, &ns, root.id, "health.json", .file, false, health_json);
+            if (maybe_service_cfg) |service_cfg| {
+                try self.ensureNamespaceCapabilityArtifacts(export_index, &ns, root.id, service_cfg.venom_id);
+            }
             const control_dir = try self.namespaceCreateNode(export_index, &ns, root.id, "control", .dir, true, "");
             _ = try self.namespaceCreateNode(export_index, &ns, control_dir, "invoke.json", .file, true, "");
             _ = try self.namespaceCreateNode(export_index, &ns, control_dir, "reset", .file, true, "");
@@ -1196,6 +1211,24 @@ pub const NodeOps = struct {
         if (try self.namespace_exports.fetchPut(self.allocator, export_index, ns)) |existing| {
             var replaced = existing.value;
             replaced.deinit(self.allocator);
+        }
+    }
+
+    fn ensureNamespaceCapabilityArtifacts(
+        self: *NodeOps,
+        export_index: usize,
+        ns: *NamespaceExport,
+        root_id: u64,
+        venom_id: []const u8,
+    ) !void {
+        if (!macos_capability_venoms.requiresComputerArtifacts(venom_id) and
+            !macos_capability_venoms.requiresBrowserArtifacts(venom_id)) return;
+
+        const artifacts_dir = try self.namespaceCreateNode(export_index, ns, root_id, "artifacts", .dir, false, "");
+        _ = try self.namespaceCreateNode(export_index, ns, artifacts_dir, "last_observation.json", .file, false, "{}");
+        _ = try self.namespaceCreateNode(export_index, ns, artifacts_dir, "last_screenshot.png", .file, false, "");
+        if (macos_capability_venoms.requiresBrowserArtifacts(venom_id)) {
+            _ = try self.namespaceCreateNode(export_index, ns, artifacts_dir, "last_dom.json", .file, false, "{}");
         }
     }
 
@@ -2049,33 +2082,43 @@ pub const NodeOps = struct {
             stats.consecutive_timeouts = 0;
             runtime.cooldown_until_ms = 0;
             const result_content = if (invoke_result.stdout.len > 0) invoke_result.stdout else "{}";
+            var augmentations = try self.parseNamespaceVenomOutputAugmentations(export_index, ns, result_content);
+            defer augmentations.deinit(self.allocator);
             try self.namespaceSetFileContent(ns, result_id, result_content);
             try self.namespaceSetFileContent(ns, error_id, "");
-            const status_json = try std.fmt.allocPrint(
-                self.allocator,
-                "{{\"state\":\"ok\",\"venom_id\":\"{s}\",\"runtime\":\"{s}\",\"updated_ms\":{d},\"duration_ms\":{d},\"bytes\":{d},\"exit_code\":{d},\"invokes_total\":{d},\"failures_total\":{d},\"consecutive_failures\":{d},\"timeouts_total\":{d},\"consecutive_timeouts\":{d}}}",
-                .{
-                    service_cfg.venom_id,
-                    service_cfg.runtime_kind.asString(),
-                    finished_ms,
-                    duration_ms,
-                    result_content.len,
-                    invoke_result.exit_code,
-                    stats.invokes_total,
-                    stats.failures_total,
-                    stats.consecutive_failures,
-                    stats.timeouts_total,
-                    stats.consecutive_timeouts,
-                },
-            );
-            defer self.allocator.free(status_json);
-            try self.namespaceSetFileContent(ns, status_id, status_json);
+            if (augmentations.status_json) |status_json| {
+                try self.namespaceSetFileContent(ns, status_id, status_json);
+            } else {
+                const status_json = try std.fmt.allocPrint(
+                    self.allocator,
+                    "{{\"state\":\"ok\",\"venom_id\":\"{s}\",\"runtime\":\"{s}\",\"updated_ms\":{d},\"duration_ms\":{d},\"bytes\":{d},\"exit_code\":{d},\"invokes_total\":{d},\"failures_total\":{d},\"consecutive_failures\":{d},\"timeouts_total\":{d},\"consecutive_timeouts\":{d}}}",
+                    .{
+                        service_cfg.venom_id,
+                        service_cfg.runtime_kind.asString(),
+                        finished_ms,
+                        duration_ms,
+                        result_content.len,
+                        invoke_result.exit_code,
+                        stats.invokes_total,
+                        stats.failures_total,
+                        stats.consecutive_failures,
+                        stats.timeouts_total,
+                        stats.consecutive_timeouts,
+                    },
+                );
+                defer self.allocator.free(status_json);
+                try self.namespaceSetFileContent(ns, status_id, status_json);
+            }
             const metrics_json = try self.renderNamespaceVenomMetricsJson(stats);
             defer self.allocator.free(metrics_json);
             try self.namespaceSetFileContent(ns, metrics_id, metrics_json);
-            const health_json = try self.renderNamespaceVenomHealthJson(&service_cfg, runtime, stats);
-            defer self.allocator.free(health_json);
-            try self.namespaceSetFileContent(ns, health_id, health_json);
+            if (augmentations.health_json) |health_json| {
+                try self.namespaceSetFileContent(ns, health_id, health_json);
+            } else {
+                const health_json = try self.renderNamespaceVenomHealthJson(&service_cfg, runtime, stats);
+                defer self.allocator.free(health_json);
+                try self.namespaceSetFileContent(ns, health_id, health_json);
+            }
             runtime_state_changed = true;
             return;
         }
@@ -2251,6 +2294,87 @@ pub const NodeOps = struct {
                 .timed_out = timed_out,
             },
         };
+    }
+
+    fn parseNamespaceVenomOutputAugmentations(
+        self: *NodeOps,
+        export_index: usize,
+        ns: *NamespaceExport,
+        stdout: []const u8,
+    ) !NamespaceInvocationAugmentations {
+        const trimmed = std.mem.trim(u8, stdout, " \t\r\n");
+        if (trimmed.len == 0) return .{};
+
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, trimmed, .{}) catch return .{};
+        defer parsed.deinit();
+        if (parsed.value != .object) return .{};
+
+        var result = NamespaceInvocationAugmentations{};
+        errdefer result.deinit(self.allocator);
+
+        if (parsed.value.object.get("status")) |status_value| {
+            result.status_json = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(status_value, .{})});
+        }
+        if (parsed.value.object.get("health")) |health_value| {
+            result.health_json = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(health_value, .{})});
+        }
+        if (parsed.value.object.get("artifact_updates")) |updates_value| {
+            try self.applyNamespaceArtifactUpdates(export_index, ns, updates_value);
+        }
+        return result;
+    }
+
+    fn applyNamespaceArtifactUpdates(
+        self: *NodeOps,
+        export_index: usize,
+        ns: *NamespaceExport,
+        updates_value: std.json.Value,
+    ) !void {
+        if (updates_value != .array) return;
+        for (updates_value.array.items) |item| {
+            if (item != .object) continue;
+            const raw_path = if (item.object.get("path")) |value|
+                if (value == .string and value.string.len > 0) value.string else continue
+            else
+                continue;
+            if (!isSafeNamespaceArtifactPath(raw_path)) continue;
+
+            var owned_decoded: ?[]u8 = null;
+            defer if (owned_decoded) |value| self.allocator.free(value);
+            const content: []const u8 = blk: {
+                if (item.object.get("content")) |value| {
+                    if (value != .string) continue;
+                    break :blk value.string;
+                }
+                if (item.object.get("content_b64")) |value| {
+                    if (value != .string) continue;
+                    owned_decoded = try decodeBase64Alloc(self.allocator, value.string);
+                    break :blk owned_decoded.?;
+                }
+                continue;
+            };
+
+            const parent_id = try self.namespaceEnsureDirPathLocked(export_index, ns, raw_path);
+            const file_name = namespaceLeafName(raw_path);
+            if (file_name.len == 0) continue;
+            _ = try self.namespaceEnsureFileContent(export_index, ns, parent_id, file_name, content, false);
+        }
+    }
+
+    fn isSafeNamespaceArtifactPath(path: []const u8) bool {
+        if (path.len == 0 or std.mem.startsWith(u8, path, "/")) return false;
+        if (!std.mem.startsWith(u8, path, "artifacts/")) return false;
+        if (std.mem.indexOf(u8, path, "..") != null) return false;
+        return true;
+    }
+
+    fn decodeBase64Alloc(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
+        const decoder = std.base64.standard.Decoder;
+        const size = try decoder.calcSizeForSlice(encoded);
+        const out = try allocator.alloc(u8, size);
+        errdefer allocator.free(out);
+        try decoder.decode(out, encoded);
+        return out;
     }
 
     fn executeNamespaceVenomInproc(
@@ -5726,6 +5850,58 @@ fn defaultGdriveCredentialHandle(allocator: std.mem.Allocator, export_name: []co
     }
     if (out.items.len == "gdrive.".len) try out.appendSlice(allocator, "default");
     return out.toOwnedSlice(allocator);
+}
+
+test "fs_node_ops: namespace service output augments status, health, and artifact files" {
+    const allocator = std.testing.allocator;
+
+    const runtime_exe, const runtime_args = if (builtin.os.tag == .windows)
+        .{ "cmd.exe", &[_][]const u8{ "/C", "more" } }
+    else
+        .{ "sh", &[_][]const u8{ "-lc", "cat" } };
+
+    var node_ops = try NodeOps.init(allocator, &[_]ExportSpec{
+        .{
+            .name = "svc-computer",
+            .path = "service:computer-main",
+            .source_kind = .namespace,
+            .source_id = "service:computer-main",
+            .ro = false,
+            .namespace_venom = .{
+                .venom_id = "computer-main",
+                .runtime_kind = .native_proc,
+                .executable_path = runtime_exe,
+                .args = runtime_args,
+                .timeout_ms = 5_000,
+            },
+        },
+    });
+    defer node_ops.deinit();
+
+    const venom_idx = node_ops.exportByName("svc-computer").?;
+    const ns = node_ops.namespace_exports.getPtr(venom_idx) orelse return error.TestExpectedResponse;
+    const invoke_id = ns.path_to_node.get("/control/invoke.json") orelse return error.TestExpectedResponse;
+    const status_id = ns.path_to_node.get("/status.json") orelse return error.TestExpectedResponse;
+    const health_id = ns.path_to_node.get("/health.json") orelse return error.TestExpectedResponse;
+    const observation_id = ns.path_to_node.get("/artifacts/last_observation.json") orelse return error.TestExpectedResponse;
+    const screenshot_id = ns.path_to_node.get("/artifacts/last_screenshot.png") orelse return error.TestExpectedResponse;
+
+    try node_ops.namespaceSetFileContent(
+        ns,
+        invoke_id,
+        "{\"status\":{\"state\":\"ok\",\"permissions\":{\"accessibility\":true}},\"health\":{\"state\":\"online\",\"platform\":\"macos\"},\"artifact_updates\":[{\"path\":\"artifacts/last_observation.json\",\"content\":\"{\\\"focused_window\\\":{\\\"app_name\\\":\\\"Fixture\\\"}}\"},{\"path\":\"artifacts/last_screenshot.png\",\"content_b64\":\"cG5nLWJ5dGVz\"}]}",
+    );
+    try node_ops.maybeInvokeNamespaceVenomControl(venom_idx, ns, invoke_id);
+
+    const status_node = ns.nodes.get(status_id) orelse return error.TestExpectedResponse;
+    const health_node = ns.nodes.get(health_id) orelse return error.TestExpectedResponse;
+    const observation_node = ns.nodes.get(observation_id) orelse return error.TestExpectedResponse;
+    const screenshot_node = ns.nodes.get(screenshot_id) orelse return error.TestExpectedResponse;
+
+    try std.testing.expect(std.mem.indexOf(u8, status_node.content, "\"permissions\":{\"accessibility\":true}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, health_node.content, "\"platform\":\"macos\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, observation_node.content, "\"Fixture\"") != null);
+    try std.testing.expectEqualStrings("png-bytes", screenshot_node.content);
 }
 
 fn buildGdriveChangePersistHandle(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
