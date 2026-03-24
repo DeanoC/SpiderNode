@@ -61,6 +61,12 @@ const ArtifactUpdate = struct {
     content_b64: ?[]u8 = null,
 };
 
+const PermissionState = struct {
+    accessibility: bool,
+    screen_capture_checked: bool = false,
+    screen_capture: bool = false,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -109,26 +115,20 @@ pub fn main() !void {
 }
 
 fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
-    const accessibility = uiScriptingAvailable(allocator);
-    var screen_capture = false;
+    var permissions = PermissionState{
+        .accessibility = uiScriptingAvailable(allocator),
+        .screen_capture_checked = args.include_screenshot,
+    };
 
-    const observation_json = if (accessibility)
+    const observation_json = if (permissions.accessibility)
         try collectObservationJson(allocator)
     else
         try allocator.dupe(u8, "{\"focused_window\":null,\"windows\":[],\"ui_tree\":null,\"permission_state\":{\"accessibility\":false,\"screen_capture\":false}}");
     defer allocator.free(observation_json);
 
-    const status_json = try std.fmt.allocPrint(
-        allocator,
-        "{{\"state\":\"{s}\",\"permissions\":{{\"accessibility\":{},\"screen_capture\":{}}},\"device\":\"computer\"}}",
-        .{ if (accessibility) "ok" else "degraded", accessibility, false },
-    );
+    const status_json = try renderComputerStatusJson(allocator, permissions);
     defer allocator.free(status_json);
-    const health_json = try std.fmt.allocPrint(
-        allocator,
-        "{{\"state\":\"{s}\",\"platform\":\"macos\",\"permissions\":{{\"accessibility\":{},\"screen_capture\":{}}}}}",
-        .{ if (accessibility) "online" else "degraded", accessibility, false },
-    );
+    const health_json = try renderComputerHealthJson(allocator, permissions);
     defer allocator.free(health_json);
 
     var updates = std.ArrayListUnmanaged(ArtifactUpdate){};
@@ -143,7 +143,7 @@ fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
 
     if (args.include_screenshot) {
         if (try captureScreenshotBase64(allocator)) |encoded| {
-            screen_capture = true;
+            permissions.screen_capture = true;
             errdefer allocator.free(encoded);
             try updates.append(allocator, .{
                 .path = "artifacts/last_screenshot.png",
@@ -158,11 +158,11 @@ fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
         .{
             capability.computer_venom_id,
             observation_json,
-            if (screen_capture) "\"artifacts/last_screenshot.png\"" else "null",
+            if (permissions.screen_capture) "\"artifacts/last_screenshot.png\"" else "null",
             status_json,
-            if (accessibility) "online" else "degraded",
-            accessibility,
-            screen_capture,
+            if (permissions.accessibility) "online" else "degraded",
+            permissions.accessibility,
+            permissions.screen_capture,
             try renderArtifactUpdatesJson(allocator, updates.items),
         },
     );
@@ -170,12 +170,18 @@ fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
 }
 
 fn performAct(allocator: std.mem.Allocator, args: *ActArgs) ![]u8 {
-    const accessibility = uiScriptingAvailable(allocator);
-    if (!accessibility) {
+    const permissions = PermissionState{
+        .accessibility = uiScriptingAvailable(allocator),
+    };
+    const status_json = try renderComputerStatusJson(allocator, permissions);
+    defer allocator.free(status_json);
+    const health_json = try renderComputerHealthJson(allocator, permissions);
+    defer allocator.free(health_json);
+    if (!permissions.accessibility) {
         return std.fmt.allocPrint(
             allocator,
-            "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":false,\"reason\":\"accessibility_not_granted\",\"action\":\"{s}\"}},\"status\":{{\"state\":\"degraded\",\"permissions\":{{\"accessibility\":false,\"screen_capture\":false}}}},\"health\":{{\"state\":\"degraded\",\"platform\":\"macos\",\"permissions\":{{\"accessibility\":false,\"screen_capture\":false}}}}}}",
-            .{ capability.computer_venom_id, @tagName(args.action) },
+            "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":false,\"reason\":\"accessibility_not_granted\",\"action\":\"{s}\",\"guidance\":\"Enable Accessibility for the host app controlling System Events to allow desktop actuation.\"}},\"status\":{s},\"health\":{s}}}",
+            .{ capability.computer_venom_id, @tagName(args.action), status_json, health_json },
         );
     }
 
@@ -189,8 +195,42 @@ fn performAct(allocator: std.mem.Allocator, args: *ActArgs) ![]u8 {
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":true,\"action\":\"{s}\"}},\"status\":{{\"state\":\"ok\",\"permissions\":{{\"accessibility\":true,\"screen_capture\":false}}}},\"health\":{{\"state\":\"online\",\"platform\":\"macos\",\"permissions\":{{\"accessibility\":true,\"screen_capture\":false}}}}}}",
-        .{ capability.computer_venom_id, @tagName(args.action) },
+        "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":true,\"action\":\"{s}\"}},\"status\":{s},\"health\":{s}}}",
+        .{ capability.computer_venom_id, @tagName(args.action), status_json, health_json },
+    );
+}
+
+fn renderComputerStatusJson(allocator: std.mem.Allocator, permissions: PermissionState) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"state\":\"{s}\",\"device\":\"computer\",\"readiness_state\":\"{s}\",\"observe_ready\":{},\"act_ready\":{},\"screenshot_ready\":{},\"permissions\":{{\"accessibility\":{{\"granted\":{},\"required\":true,\"guidance\":\"Enable Accessibility for the host app controlling System Events to allow desktop observation and actuation.\"}},\"screen_capture\":{{\"granted\":{},\"checked\":{},\"required\":false,\"guidance\":\"Enable Screen Recording for the host app if you want screenshot artifacts from the computer venom.\"}}}}}}",
+        .{
+            if (permissions.accessibility) "ok" else "degraded",
+            if (permissions.accessibility) "ready" else "accessibility_required",
+            permissions.accessibility,
+            permissions.accessibility,
+            permissions.screen_capture,
+            permissions.accessibility,
+            permissions.screen_capture,
+            permissions.screen_capture_checked,
+        },
+    );
+}
+
+fn renderComputerHealthJson(allocator: std.mem.Allocator, permissions: PermissionState) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"state\":\"{s}\",\"platform\":\"macos\",\"readiness_state\":\"{s}\",\"observe_ready\":{},\"act_ready\":{},\"screenshot_ready\":{},\"permissions\":{{\"accessibility\":{{\"granted\":{},\"required\":true,\"guidance\":\"Enable Accessibility for the host app controlling System Events to allow desktop observation and actuation.\"}},\"screen_capture\":{{\"granted\":{},\"checked\":{},\"required\":false,\"guidance\":\"Enable Screen Recording for the host app if you want screenshot artifacts from the computer venom.\"}}}}}}",
+        .{
+            if (permissions.accessibility) "online" else "degraded",
+            if (permissions.accessibility) "ready" else "accessibility_required",
+            permissions.accessibility,
+            permissions.accessibility,
+            permissions.screen_capture,
+            permissions.accessibility,
+            permissions.screen_capture,
+            permissions.screen_capture_checked,
+        },
     );
 }
 
@@ -598,4 +638,26 @@ test "computer_driver: parse observe payload honors include_screenshot" {
     defer parsed.deinit();
     const args = try parseObserveArgs(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!args.include_screenshot);
+}
+
+test "computer_driver: status and health report readiness guidance" {
+    const allocator = std.testing.allocator;
+
+    const degraded_status = try renderComputerStatusJson(allocator, .{
+        .accessibility = false,
+        .screen_capture_checked = true,
+        .screen_capture = false,
+    });
+    defer allocator.free(degraded_status);
+    try std.testing.expect(std.mem.indexOf(u8, degraded_status, "\"readiness_state\":\"accessibility_required\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, degraded_status, "\"guidance\":\"Enable Accessibility") != null);
+
+    const ready_health = try renderComputerHealthJson(allocator, .{
+        .accessibility = true,
+        .screen_capture_checked = false,
+        .screen_capture = false,
+    });
+    defer allocator.free(ready_health);
+    try std.testing.expect(std.mem.indexOf(u8, ready_health, "\"state\":\"online\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ready_health, "\"screenshot_ready\":false") != null);
 }

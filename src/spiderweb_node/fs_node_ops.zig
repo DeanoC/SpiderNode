@@ -69,12 +69,18 @@ pub const NamespaceVenomSpec = struct {
     module_path: ?[]const u8 = null,
     wasm_entrypoint: ?[]const u8 = null,
     args: []const []const u8 = &.{},
+    env: []const NamespaceVenomEnvVar = &.{},
     timeout_ms: u64 = namespace_venom_default_timeout_ms,
     fuel: ?u64 = null,
     max_memory_bytes: ?u64 = null,
     help_md: ?[]const u8 = null,
     schema_json: ?[]const u8 = null,
     invoke_template_json: ?[]const u8 = null,
+};
+
+pub const NamespaceVenomEnvVar = struct {
+    key: []const u8,
+    value: []const u8,
 };
 
 pub const NamespaceVenomRuntimeKind = enum {
@@ -99,6 +105,7 @@ const NamespaceVenomConfig = struct {
     module_path: ?[]u8 = null,
     wasm_entrypoint: ?[]u8 = null,
     args: std.ArrayListUnmanaged([]u8) = .{},
+    env: std.ArrayListUnmanaged(NamespaceVenomEnvVar) = .{},
     timeout_ms: u64 = namespace_venom_default_timeout_ms,
     fuel: ?u64 = null,
     max_memory_bytes: ?u64 = null,
@@ -114,6 +121,11 @@ const NamespaceVenomConfig = struct {
         if (self.wasm_entrypoint) |value| allocator.free(value);
         for (self.args.items) |arg| allocator.free(arg);
         self.args.deinit(allocator);
+        for (self.env.items) |entry| {
+            allocator.free(@constCast(entry.key));
+            allocator.free(@constCast(entry.value));
+        }
+        self.env.deinit(allocator);
         if (self.help_md) |value| allocator.free(value);
         if (self.schema_json) |value| allocator.free(value);
         if (self.invoke_template_json) |value| allocator.free(value);
@@ -931,6 +943,12 @@ pub const NodeOps = struct {
                 errdefer owned.deinit(self.allocator);
                 for (service_spec.args) |arg| {
                     try owned.args.append(self.allocator, try self.allocator.dupe(u8, arg));
+                }
+                for (service_spec.env) |entry| {
+                    try owned.env.append(self.allocator, .{
+                        .key = try self.allocator.dupe(u8, entry.key),
+                        .value = try self.allocator.dupe(u8, entry.value),
+                    });
                 }
                 break :blk owned;
             } else null
@@ -2236,7 +2254,7 @@ pub const NodeOps = struct {
                 defer argv.deinit(self.allocator);
                 try argv.append(self.allocator, executable_path);
                 for (service_cfg.args.items) |arg| try argv.append(self.allocator, arg);
-                return self.executeNamespaceVenomCommandArgv(argv.items, payload, service_cfg.timeout_ms);
+                return self.executeNamespaceVenomCommandArgv(argv.items, service_cfg.env.items, payload, service_cfg.timeout_ms);
             },
             .native_inproc => self.executeNamespaceVenomInproc(service_cfg, payload),
             .wasm => self.executeNamespaceVenomWasm(service_cfg, payload),
@@ -2246,6 +2264,7 @@ pub const NodeOps = struct {
     fn executeNamespaceVenomCommandArgv(
         self: *NodeOps,
         command_argv: []const []const u8,
+        env_vars: []const NamespaceVenomEnvVar,
         payload: []const u8,
         timeout_ms: u64,
     ) !ServiceProcessResult {
@@ -2258,6 +2277,13 @@ pub const NodeOps = struct {
         child.stdin_behavior = .Pipe;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
+        var env_map: ?std.process.EnvMap = null;
+        defer if (env_map) |*map| map.deinit();
+        if (env_vars.len > 0) {
+            env_map = try std.process.getEnvMap(self.allocator);
+            for (env_vars) |entry| try env_map.?.put(entry.key, entry.value);
+            child.env_map = &env_map.?;
+        }
 
         try child.spawn();
         errdefer _ = child.kill() catch {};
@@ -2395,7 +2421,7 @@ pub const NodeOps = struct {
         try argv.append(self.allocator, "--internal-inproc-invoke");
         try argv.append(self.allocator, "--library-path");
         try argv.append(self.allocator, library_path);
-        return self.executeNamespaceVenomCommandArgv(argv.items, payload, service_cfg.timeout_ms);
+        return self.executeNamespaceVenomCommandArgv(argv.items, service_cfg.env.items, payload, service_cfg.timeout_ms);
     }
 
     fn executeNamespaceVenomInprocDirect(
@@ -7477,9 +7503,16 @@ fn buildRuntimeConformanceFixtures(allocator: std.mem.Allocator) !RuntimeConform
     const runner_source =
         "#include <stdio.h>\n" ++
         "#include <stddef.h>\n" ++
+        "#include <stdlib.h>\n" ++
+        "#include <string.h>\n" ++
         "int main(int argc, char** argv) {\n" ++
-        "  (void)argc;\n" ++
-        "  (void)argv;\n" ++
+        "  if (argc > 1 && strcmp(argv[1], \"--print-env\") == 0) {\n" ++
+        "    const char* key = argc > 2 ? argv[2] : \"SPIDERWEB_TEST_ENV\";\n" ++
+        "    const char* value = getenv(key);\n" ++
+        "    if (value == NULL) value = \"\";\n" ++
+        "    if (fwrite(value, 1, strlen(value), stdout) != strlen(value)) return 4;\n" ++
+        "    return 0;\n" ++
+        "  }\n" ++
         "  unsigned char buffer[4096];\n" ++
         "  size_t n = 0;\n" ++
         "  while ((n = fread(buffer, 1, sizeof(buffer), stdin)) > 0) {\n" ++
@@ -7679,6 +7712,39 @@ test "fs_node_ops: runtime invoke parity across native_proc native_inproc wasm" 
     try std.testing.expectEqual(@as(usize, 0), proc_result.stderr.len);
     try std.testing.expectEqual(@as(usize, 0), inproc_result.stderr.len);
     try std.testing.expectEqual(@as(usize, 0), wasm_result.stderr.len);
+}
+
+test "fs_node_ops: native proc namespace venom receives runtime env overrides" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var fixtures = try buildRuntimeConformanceFixtures(allocator);
+    defer fixtures.deinit(allocator);
+
+    var node_ops = try NodeOps.init(allocator, &[_]ExportSpec{});
+    defer node_ops.deinit();
+
+    var native_proc_cfg = NamespaceVenomConfig{
+        .venom_id = try allocator.dupe(u8, "svc-native-proc-env"),
+        .runtime_kind = .native_proc,
+        .executable_path = try allocator.dupe(u8, fixtures.runner_exe_path),
+        .timeout_ms = 5_000,
+    };
+    defer native_proc_cfg.deinit(allocator);
+    try native_proc_cfg.args.append(allocator, try allocator.dupe(u8, "--print-env"));
+    try native_proc_cfg.args.append(allocator, try allocator.dupe(u8, "SPIDERWEB_TEST_ENV"));
+    try native_proc_cfg.env.append(allocator, .{
+        .key = try allocator.dupe(u8, "SPIDERWEB_TEST_ENV"),
+        .value = try allocator.dupe(u8, "runtime-env-ok"),
+    });
+
+    var result = try node_ops.executeNamespaceVenomInvocation(&native_proc_cfg, "{}");
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.success and !result.timed_out);
+    try std.testing.expectEqual(@as(i32, 0), result.exit_code);
+    try std.testing.expectEqualStrings("runtime-env-ok", result.stdout);
+    try std.testing.expectEqual(@as(usize, 0), result.stderr.len);
 }
 
 test "fs_node_ops: namespace supervision cooldown gates repeated invoke" {
