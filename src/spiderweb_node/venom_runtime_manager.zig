@@ -31,6 +31,38 @@ pub const VenomRuntimeStats = struct {
     }
 };
 
+pub const VenomInstallState = struct {
+    installed: bool,
+    enabled: bool,
+    runtime_type: namespace_driver.RuntimeType,
+};
+
+pub const VenomProviderSnapshot = struct {
+    state: namespace_driver.VenomState,
+    running: bool,
+    start_attempts_total: u64,
+    restarts_total: u64,
+    consecutive_failures: u32,
+    backoff_until_ms: i64,
+    last_start_ms: i64,
+    last_stop_ms: i64,
+    last_transition_ms: i64,
+    last_healthy_ms: i64,
+    last_error_len: usize = 0,
+    last_error_buf: [runtime_stats_last_error_max]u8 = [_]u8{0} ** runtime_stats_last_error_max,
+
+    pub fn lastError(self: *const VenomProviderSnapshot) ?[]const u8 {
+        if (self.last_error_len == 0) return null;
+        return self.last_error_buf[0..self.last_error_len];
+    }
+};
+
+pub const VenomLifecycleSnapshot = struct {
+    install: VenomInstallState,
+    provider: VenomProviderSnapshot,
+    policy: VenomSupervisionPolicy,
+};
+
 pub const ParsedVenomRegistration = struct {
     descriptor: namespace_driver.VenomDescriptor,
     policy: VenomSupervisionPolicy,
@@ -52,51 +84,59 @@ pub const RuntimeManager = struct {
         descriptor: namespace_driver.VenomDescriptor,
         driver: ?namespace_driver.DriverHandle = null,
         policy: VenomSupervisionPolicy = .{},
+        install: VenomInstallState,
+        provider_state: ProviderState = .{},
 
-        enabled: bool = true,
-        running: bool = false,
-        started_once: bool = false,
-        start_attempts_total: u64 = 0,
-        restarts_total: u64 = 0,
-        consecutive_failures: u32 = 0,
-        next_health_check_ms: i64 = 0,
-        backoff_until_ms: i64 = 0,
-        last_start_ms: i64 = 0,
-        last_stop_ms: i64 = 0,
-        last_transition_ms: i64 = 0,
-        last_healthy_ms: i64 = 0,
-        last_error: ?[]u8 = null,
+        const ProviderState = struct {
+            running: bool = false,
+            started_once: bool = false,
+            start_attempts_total: u64 = 0,
+            restarts_total: u64 = 0,
+            consecutive_failures: u32 = 0,
+            next_health_check_ms: i64 = 0,
+            backoff_until_ms: i64 = 0,
+            last_start_ms: i64 = 0,
+            last_stop_ms: i64 = 0,
+            last_transition_ms: i64 = 0,
+            last_healthy_ms: i64 = 0,
+            last_error: ?[]u8 = null,
+
+            fn deinit(self: *ProviderState, allocator: std.mem.Allocator) void {
+                if (self.last_error) |value| allocator.free(value);
+                self.* = undefined;
+            }
+
+            fn setLastError(self: *ProviderState, allocator: std.mem.Allocator, detail: []const u8) void {
+                if (self.last_error) |value| allocator.free(value);
+                self.last_error = allocator.dupe(u8, detail) catch null;
+            }
+
+            fn clearLastError(self: *ProviderState, allocator: std.mem.Allocator) void {
+                if (self.last_error) |value| {
+                    allocator.free(value);
+                    self.last_error = null;
+                }
+            }
+        };
 
         fn deinit(self: *ManagedVenom, allocator: std.mem.Allocator) void {
             self.descriptor.deinit(allocator);
-            if (self.last_error) |value| allocator.free(value);
+            self.provider_state.deinit(allocator);
             self.* = undefined;
-        }
-
-        fn setLastError(self: *ManagedVenom, allocator: std.mem.Allocator, detail: []const u8) void {
-            if (self.last_error) |value| allocator.free(value);
-            self.last_error = allocator.dupe(u8, detail) catch null;
-        }
-
-        fn clearLastError(self: *ManagedVenom, allocator: std.mem.Allocator) void {
-            if (self.last_error) |value| {
-                allocator.free(value);
-                self.last_error = null;
-            }
         }
 
         fn runtimeStats(self: *const ManagedVenom) VenomRuntimeStats {
             var stats: VenomRuntimeStats = .{
-                .enabled = self.enabled,
-                .running = self.running,
-                .start_attempts_total = self.start_attempts_total,
-                .restarts_total = self.restarts_total,
-                .consecutive_failures = self.consecutive_failures,
-                .backoff_until_ms = self.backoff_until_ms,
-                .last_transition_ms = self.last_transition_ms,
-                .last_healthy_ms = self.last_healthy_ms,
+                .enabled = self.install.enabled,
+                .running = self.provider_state.running,
+                .start_attempts_total = self.provider_state.start_attempts_total,
+                .restarts_total = self.provider_state.restarts_total,
+                .consecutive_failures = self.provider_state.consecutive_failures,
+                .backoff_until_ms = self.provider_state.backoff_until_ms,
+                .last_transition_ms = self.provider_state.last_transition_ms,
+                .last_healthy_ms = self.provider_state.last_healthy_ms,
             };
-            if (self.last_error) |value| {
+            if (self.provider_state.last_error) |value| {
                 const copy_len = @min(value.len, runtime_stats_last_error_max);
                 if (copy_len > 0) {
                     @memcpy(stats.last_error_buf[0..copy_len], value[0..copy_len]);
@@ -104,6 +144,33 @@ pub const RuntimeManager = struct {
                 }
             }
             return stats;
+        }
+
+        fn lifecycleSnapshot(self: *const ManagedVenom) VenomLifecycleSnapshot {
+            var provider: VenomProviderSnapshot = .{
+                .state = self.descriptor.state,
+                .running = self.provider_state.running,
+                .start_attempts_total = self.provider_state.start_attempts_total,
+                .restarts_total = self.provider_state.restarts_total,
+                .consecutive_failures = self.provider_state.consecutive_failures,
+                .backoff_until_ms = self.provider_state.backoff_until_ms,
+                .last_start_ms = self.provider_state.last_start_ms,
+                .last_stop_ms = self.provider_state.last_stop_ms,
+                .last_transition_ms = self.provider_state.last_transition_ms,
+                .last_healthy_ms = self.provider_state.last_healthy_ms,
+            };
+            if (self.provider_state.last_error) |value| {
+                const copy_len = @min(value.len, runtime_stats_last_error_max);
+                if (copy_len > 0) {
+                    @memcpy(provider.last_error_buf[0..copy_len], value[0..copy_len]);
+                    provider.last_error_len = copy_len;
+                }
+            }
+            return .{
+                .install = self.install,
+                .provider = provider,
+                .policy = self.policy,
+            };
         }
     };
 
@@ -143,7 +210,11 @@ pub const RuntimeManager = struct {
             .descriptor = try descriptor.clone(self.allocator),
             .driver = driver,
             .policy = normalized,
-            .enabled = true,
+            .install = .{
+                .installed = true,
+                .enabled = true,
+                .runtime_type = descriptor.runtime_type,
+            },
         });
     }
 
@@ -159,8 +230,8 @@ pub const RuntimeManager = struct {
         for (self.venoms.items) |*service| {
             if (service.driver == null) continue;
             has_supervised_drivers = true;
-            service.enabled = true;
-            service.backoff_until_ms = 0;
+            service.install.enabled = true;
+            service.provider_state.backoff_until_ms = 0;
             self.startVenomLocked(service, now_ms);
         }
 
@@ -181,9 +252,9 @@ pub const RuntimeManager = struct {
         const now_ms = std.time.milliTimestamp();
         for (self.venoms.items) |*service| {
             self.stopVenomLocked(service, now_ms, .offline);
-            service.enabled = false;
-            service.backoff_until_ms = 0;
-            service.next_health_check_ms = 0;
+            service.install.enabled = false;
+            service.provider_state.backoff_until_ms = 0;
+            service.provider_state.next_health_check_ms = 0;
         }
         self.mutex.unlock();
 
@@ -196,10 +267,10 @@ pub const RuntimeManager = struct {
 
         const idx = self.findVenomIndexLocked(venom_id) orelse return error.VenomNotFound;
         const service = &self.venoms.items[idx];
-        service.enabled = true;
-        service.backoff_until_ms = 0;
+        service.install.enabled = true;
+        service.provider_state.backoff_until_ms = 0;
 
-        if (service.driver != null and !service.running) {
+        if (service.driver != null and !service.provider_state.running) {
             self.startVenomLocked(service, std.time.milliTimestamp());
         }
     }
@@ -210,8 +281,8 @@ pub const RuntimeManager = struct {
 
         const idx = self.findVenomIndexLocked(venom_id) orelse return error.VenomNotFound;
         const service = &self.venoms.items[idx];
-        service.enabled = false;
-        service.backoff_until_ms = 0;
+        service.install.enabled = false;
+        service.provider_state.backoff_until_ms = 0;
         self.stopVenomLocked(service, std.time.milliTimestamp(), .offline);
     }
 
@@ -221,8 +292,8 @@ pub const RuntimeManager = struct {
 
         const idx = self.findVenomIndexLocked(venom_id) orelse return error.VenomNotFound;
         const service = &self.venoms.items[idx];
-        service.enabled = true;
-        service.backoff_until_ms = 0;
+        service.install.enabled = true;
+        service.provider_state.backoff_until_ms = 0;
         self.stopVenomLocked(service, std.time.milliTimestamp(), .degraded);
         self.startVenomLocked(service, std.time.milliTimestamp());
     }
@@ -241,6 +312,13 @@ pub const RuntimeManager = struct {
         return self.venoms.items[idx].runtimeStats();
     }
 
+    pub fn venomLifecycleSnapshot(self: *RuntimeManager, venom_id: []const u8) ?VenomLifecycleSnapshot {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        const idx = self.findVenomIndexLocked(venom_id) orelse return null;
+        return self.venoms.items[idx].lifecycleSnapshot();
+    }
+
     pub fn registerFromVenomJson(self: *RuntimeManager, venom_json: []const u8) !void {
         var parsed = try parseVenomRegistrationFromVenomJson(self.allocator, venom_json);
         defer parsed.deinit(self.allocator);
@@ -257,31 +335,31 @@ pub const RuntimeManager = struct {
     fn startVenomLocked(self: *RuntimeManager, service: *ManagedVenom, now_ms: i64) void {
         const driver = service.driver orelse return;
 
-        service.start_attempts_total +%= 1;
+        service.provider_state.start_attempts_total +%= 1;
         driver.start(self.allocator) catch |err| {
             self.setVenomStateLocked(service, .degraded, now_ms);
-            service.running = false;
-            service.setLastError(self.allocator, @errorName(err));
-            service.consecutive_failures +%= 1;
+            service.provider_state.running = false;
+            service.provider_state.setLastError(self.allocator, @errorName(err));
+            service.provider_state.consecutive_failures +%= 1;
             self.applyFailurePolicyLocked(service, now_ms);
             std.log.warn("venom start failed ({s}): {s}", .{ service.descriptor.venom_id, @errorName(err) });
             return;
         };
 
-        if (service.started_once) {
-            service.restarts_total +%= 1;
+        if (service.provider_state.started_once) {
+            service.provider_state.restarts_total +%= 1;
         } else {
-            service.started_once = true;
+            service.provider_state.started_once = true;
         }
 
-        service.running = true;
+        service.provider_state.running = true;
         self.setVenomStateLocked(service, .online, now_ms);
-        service.consecutive_failures = 0;
-        service.backoff_until_ms = 0;
-        service.last_start_ms = now_ms;
-        service.last_healthy_ms = now_ms;
-        service.next_health_check_ms = now_ms + @as(i64, @intCast(service.policy.health_check_interval_ms));
-        service.clearLastError(self.allocator);
+        service.provider_state.consecutive_failures = 0;
+        service.provider_state.backoff_until_ms = 0;
+        service.provider_state.last_start_ms = now_ms;
+        service.provider_state.last_healthy_ms = now_ms;
+        service.provider_state.next_health_check_ms = now_ms + @as(i64, @intCast(service.policy.health_check_interval_ms));
+        service.provider_state.clearLastError(self.allocator);
     }
 
     fn stopVenomLocked(
@@ -291,31 +369,31 @@ pub const RuntimeManager = struct {
         target_state: namespace_driver.VenomState,
     ) void {
         if (service.driver) |driver| {
-            if (service.running) {
+            if (service.provider_state.running) {
                 driver.stop(self.allocator);
             }
         }
-        service.running = false;
-        service.last_stop_ms = now_ms;
+        service.provider_state.running = false;
+        service.provider_state.last_stop_ms = now_ms;
         self.setVenomStateLocked(service, target_state, now_ms);
     }
 
     fn applyFailurePolicyLocked(self: *RuntimeManager, service: *ManagedVenom, now_ms: i64) void {
         if (service.policy.auto_disable_on_failures and
             service.policy.max_consecutive_failures > 0 and
-            service.consecutive_failures >= service.policy.max_consecutive_failures)
+            service.provider_state.consecutive_failures >= service.policy.max_consecutive_failures)
         {
-            service.enabled = false;
-            service.backoff_until_ms = 0;
+            service.install.enabled = false;
+            service.provider_state.backoff_until_ms = 0;
             self.setVenomStateLocked(service, .offline, now_ms);
             return;
         }
 
-        const backoff_ms = computeBackoffMs(service.policy, service.consecutive_failures);
+        const backoff_ms = computeBackoffMs(service.policy, service.provider_state.consecutive_failures);
         if (backoff_ms == 0) {
-            service.backoff_until_ms = 0;
+            service.provider_state.backoff_until_ms = 0;
         } else {
-            service.backoff_until_ms = now_ms + @as(i64, @intCast(backoff_ms));
+            service.provider_state.backoff_until_ms = now_ms + @as(i64, @intCast(backoff_ms));
         }
     }
 
@@ -326,11 +404,11 @@ pub const RuntimeManager = struct {
         detail: []const u8,
         state: namespace_driver.VenomState,
     ) void {
-        service.setLastError(self.allocator, detail);
-        service.consecutive_failures +%= 1;
+        service.provider_state.setLastError(self.allocator, detail);
+        service.provider_state.consecutive_failures +%= 1;
         self.stopVenomLocked(service, now_ms, state);
         self.applyFailurePolicyLocked(service, now_ms);
-        if (!service.enabled) {
+        if (!service.install.enabled) {
             self.setVenomStateLocked(service, .offline, now_ms);
         } else {
             self.setVenomStateLocked(service, .degraded, now_ms);
@@ -344,8 +422,8 @@ pub const RuntimeManager = struct {
         now_ms: i64,
     ) void {
         _ = self;
-        if (service.descriptor.state != next or service.last_transition_ms == 0) {
-            service.last_transition_ms = now_ms;
+        if (service.descriptor.state != next or service.provider_state.last_transition_ms == 0) {
+            service.provider_state.last_transition_ms = now_ms;
         }
         service.descriptor.state = next;
     }
@@ -358,16 +436,16 @@ pub const RuntimeManager = struct {
 
         for (self.venoms.items) |*service| {
             if (service.driver == null) continue;
-            if (!service.enabled) continue;
+            if (!service.install.enabled) continue;
 
-            if (!service.running) {
-                if (service.backoff_until_ms > now_ms) continue;
+            if (!service.provider_state.running) {
+                if (service.provider_state.backoff_until_ms > now_ms) continue;
                 self.startVenomLocked(service, now_ms);
                 continue;
             }
 
-            if (service.next_health_check_ms > now_ms) continue;
-            service.next_health_check_ms = now_ms + @as(i64, @intCast(service.policy.health_check_interval_ms));
+            if (service.provider_state.next_health_check_ms > now_ms) continue;
+            service.provider_state.next_health_check_ms = now_ms + @as(i64, @intCast(service.policy.health_check_interval_ms));
 
             const health = service.driver.?.health(self.allocator) catch |err| {
                 self.recordHealthFailureLocked(
@@ -380,12 +458,12 @@ pub const RuntimeManager = struct {
             };
 
             if (health.state == .online) {
-                if (service.descriptor.state != .online or service.last_healthy_ms == 0) {
-                    service.last_healthy_ms = now_ms;
+                if (service.descriptor.state != .online or service.provider_state.last_healthy_ms == 0) {
+                    service.provider_state.last_healthy_ms = now_ms;
                 }
                 self.setVenomStateLocked(service, .online, now_ms);
-                service.consecutive_failures = 0;
-                service.clearLastError(self.allocator);
+                service.provider_state.consecutive_failures = 0;
+                service.provider_state.clearLastError(self.allocator);
                 continue;
             }
 
@@ -851,4 +929,40 @@ test "venom_runtime_manager: runtime stats include transition and recovery detai
     }
     try std.testing.expect(recovered_stats != null);
     try std.testing.expect(recovered_stats.?.last_transition_ms >= degraded.last_transition_ms);
+}
+
+test "venom_runtime_manager: lifecycle snapshot exposes install and provider state" {
+    const allocator = std.testing.allocator;
+    var manager = RuntimeManager.init(allocator);
+    defer manager.deinit();
+
+    var descriptor = try makeTestDescriptor(allocator, "svc-lifecycle");
+    defer descriptor.deinit(allocator);
+    descriptor.runtime_type = .wasm;
+
+    var mock = MockDriver{};
+    try manager.registerWithPolicy(&descriptor, mock.handle(), .{
+        .health_check_interval_ms = 10,
+    });
+
+    try manager.startAll();
+    defer manager.stopAll();
+
+    const deadline = std.time.milliTimestamp() + 2_000;
+    var snapshot: ?VenomLifecycleSnapshot = null;
+    while (std.time.milliTimestamp() < deadline) {
+        const maybe = manager.venomLifecycleSnapshot("svc-lifecycle") orelse return error.TestExpectedResponse;
+        if (maybe.provider.running and maybe.provider.state == .online) {
+            snapshot = maybe;
+            break;
+        }
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
+
+    try std.testing.expect(snapshot != null);
+    try std.testing.expect(snapshot.?.install.installed);
+    try std.testing.expect(snapshot.?.install.enabled);
+    try std.testing.expect(snapshot.?.install.runtime_type == .wasm);
+    try std.testing.expect(snapshot.?.provider.running);
+    try std.testing.expect(snapshot.?.provider.state == .online);
 }
