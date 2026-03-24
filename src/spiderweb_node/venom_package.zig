@@ -1,4 +1,5 @@
 const std = @import("std");
+const venom_metadata = @import("venom_metadata.zig");
 
 pub const Error = error{
     InvalidPayload,
@@ -9,8 +10,9 @@ pub const VenomPackage = struct {
     kind: []u8,
     version: []u8,
     categories_json: []u8,
-    hosts_json: []u8,
-    projection_modes_json: []u8,
+    host_roles_json: []u8,
+    binding_scopes_json: []u8,
+    runtime_kind: []u8,
     requirements_json: []u8,
     capabilities_json: []u8,
     ops_json: []u8,
@@ -24,8 +26,9 @@ pub const VenomPackage = struct {
         allocator.free(self.kind);
         allocator.free(self.version);
         allocator.free(self.categories_json);
-        allocator.free(self.hosts_json);
-        allocator.free(self.projection_modes_json);
+        allocator.free(self.host_roles_json);
+        allocator.free(self.binding_scopes_json);
+        allocator.free(self.runtime_kind);
         allocator.free(self.requirements_json);
         allocator.free(self.capabilities_json);
         allocator.free(self.ops_json);
@@ -65,6 +68,7 @@ pub fn replacePackagesFromJsonValue(
     for (raw.array.items) |entry| {
         if (entry != .object) return Error.InvalidPayload;
         const obj = entry.object;
+        if (!venom_metadata.runtimeKindMatchesRuntimeObject(obj)) return Error.InvalidPayload;
 
         const venom_id = getRequiredString(obj, "venom_id");
         try validateIdentifier(venom_id, 128);
@@ -85,14 +89,9 @@ pub fn replacePackagesFromJsonValue(
                 try encodeArrayValue(allocator, value)
             else
                 try allocator.dupe(u8, "[]"),
-            .hosts_json = if (obj.get("hosts")) |value|
-                try encodeArrayValue(allocator, value)
-            else
-                try allocator.dupe(u8, "[]"),
-            .projection_modes_json = if (obj.get("projection_modes")) |value|
-                try encodeArrayValue(allocator, value)
-            else
-                try allocator.dupe(u8, "[]"),
+            .host_roles_json = try venom_metadata.encodeHostRolesJson(allocator, obj, "[]"),
+            .binding_scopes_json = try venom_metadata.encodeBindingScopesJson(allocator, obj, "[]"),
+            .runtime_kind = try allocator.dupe(u8, venom_metadata.inferRuntimeKindFromObject(obj)),
             .requirements_json = if (obj.get("requirements")) |value|
                 try encodeObjectValue(allocator, value)
             else
@@ -145,14 +144,15 @@ pub fn appendPackageJson(
     defer allocator.free(escaped_version);
 
     try out.writer(allocator).print(
-        "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}",
+        "{{\"venom_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"capabilities\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s}",
         .{
             escaped_id,
             escaped_kind,
             escaped_version,
             package.categories_json,
-            package.hosts_json,
-            package.projection_modes_json,
+            package.host_roles_json,
+            package.binding_scopes_json,
+            package.runtime_kind,
             package.requirements_json,
             package.capabilities_json,
             package.ops_json,
@@ -228,8 +228,8 @@ test "venom_package: parses and re-renders packages array" {
         \\    "kind":"git",
         \\    "version":"1",
         \\    "categories":["developer","scm"],
-        \\    "hosts":["spiderweb"],
-        \\    "projection_modes":["workspace_service"],
+        \\    "host_roles":["spiderweb"],
+        \\    "binding_scopes":["workspace"],
         \\    "requirements":{"venoms":["mounts"]},
         \\    "capabilities":{"invoke":true},
         \\    "ops":{"model":"namespace"},
@@ -250,7 +250,9 @@ test "venom_package: parses and re-renders packages array" {
 
     try std.testing.expectEqual(@as(usize, 1), packages.items.len);
     try std.testing.expectEqualStrings("git", packages.items[0].venom_id);
-    try std.testing.expect(std.mem.indexOf(u8, packages.items[0].projection_modes_json, "\"workspace_service\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages.items[0].host_roles_json, "\"spiderweb\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, packages.items[0].binding_scopes_json, "\"workspace\"") != null);
+    try std.testing.expectEqualStrings("native", packages.items[0].runtime_kind);
 
     var out = std.ArrayListUnmanaged(u8){};
     defer out.deinit(allocator);
@@ -259,5 +261,9 @@ test "venom_package: parses and re-renders packages array" {
     try out.append(allocator, ']');
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\"venom_id\":\"git\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"projection_modes\":[\"workspace_service\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"host_roles\":[\"spiderweb\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"binding_scopes\":[\"workspace\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"runtime_kind\":\"native\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"hosts\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"projection_modes\":") == null);
 }

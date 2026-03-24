@@ -1,5 +1,6 @@
 const std = @import("std");
 const venom_contracts = @import("venom_contracts.zig");
+const venom_metadata = @import("venom_metadata.zig");
 
 pub const LoadedVenom = struct {
     venom_id: []u8,
@@ -23,6 +24,7 @@ pub fn loadVenomManifestFile(
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidManifest;
+    if (!venom_metadata.runtimeKindMatchesRuntimeObject(parsed.value.object)) return error.InvalidManifest;
 
     const enabled = parseOptionalBool(parsed.value.object, "enabled") orelse true;
     if (!enabled) return null;
@@ -40,14 +42,13 @@ pub fn loadVenomManifestFile(
     defer allocator.free(package_id);
     const instance_id = try dupOptionalString(allocator, parsed.value.object, "instance_id", 128);
     defer if (instance_id) |value| allocator.free(value);
-    const provider_scope = try dupOptionalStringOrDefault(allocator, parsed.value.object, "provider_scope", "node_export", 64);
-    defer allocator.free(provider_scope);
     const categories_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "categories", "[]");
     defer allocator.free(categories_json);
-    const hosts_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "hosts", "[\"node\"]");
-    defer allocator.free(hosts_json);
-    const projection_modes_json = try parseOptionalArrayJsonOrDefault(allocator, parsed.value.object, "projection_modes", "[\"node_export\"]");
-    defer allocator.free(projection_modes_json);
+    const host_roles_json = try venom_metadata.encodeHostRolesJson(allocator, parsed.value.object, "[\"node\"]");
+    defer allocator.free(host_roles_json);
+    const binding_scopes_json = try venom_metadata.encodeBindingScopesJson(allocator, parsed.value.object, "[\"workspace\"]");
+    defer allocator.free(binding_scopes_json);
+    const runtime_kind = venom_metadata.inferRuntimeKindFromObject(parsed.value.object);
     const requirements_json = try parseOptionalObjectJsonOrDefault(allocator, parsed.value.object, "requirements", "{}");
     defer allocator.free(requirements_json);
 
@@ -112,8 +113,6 @@ pub fn loadVenomManifestFile(
     defer allocator.free(escaped_version);
     const escaped_state = try jsonEscape(allocator, state);
     defer allocator.free(escaped_state);
-    const escaped_provider_scope = try jsonEscape(allocator, provider_scope);
-    defer allocator.free(escaped_provider_scope);
     const instance_fragment = if (instance_id) |value| blk: {
         const escaped_instance_id = try jsonEscape(allocator, value);
         defer allocator.free(escaped_instance_id);
@@ -126,13 +125,13 @@ pub fn loadVenomManifestFile(
         defer allocator.free(escaped_help);
         break :blk try std.fmt.allocPrint(
             allocator,
-            "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"provider_scope\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s},\"help_md\":\"{s}\"{s}}}",
-            .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, escaped_provider_scope, categories_json, hosts_json, projection_modes_json, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, escaped_help, instance_fragment },
+            "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s},\"help_md\":\"{s}\"{s}}}",
+            .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, categories_json, host_roles_json, binding_scopes_json, runtime_kind, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, escaped_help, instance_fragment },
         );
     } else try std.fmt.allocPrint(
         allocator,
-        "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"provider_scope\":\"{s}\",\"categories\":{s},\"hosts\":{s},\"projection_modes\":{s},\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s}{s}}}",
-        .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, escaped_provider_scope, categories_json, hosts_json, projection_modes_json, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, instance_fragment },
+        "{{\"venom_id\":\"{s}\",\"package_id\":\"{s}\",\"kind\":\"{s}\",\"version\":\"{s}\",\"state\":\"{s}\",\"categories\":{s},\"host_roles\":{s},\"binding_scopes\":{s},\"runtime_kind\":\"{s}\",\"requirements\":{s},\"endpoints\":{s},\"capabilities\":{s},\"mounts\":{s},\"ops\":{s},\"runtime\":{s},\"permissions\":{s},\"schema\":{s},\"invoke_template\":{s}{s}}}",
+        .{ escaped_venom_id, escaped_package_id, escaped_kind, escaped_version, escaped_state, categories_json, host_roles_json, binding_scopes_json, runtime_kind, requirements_json, endpoints_json, capabilities_json, mounts_json, ops_json, runtime_json, permissions_json, schema_json, invoke_template_json, instance_fragment },
     );
 
     return .{

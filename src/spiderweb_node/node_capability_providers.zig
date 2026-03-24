@@ -1,6 +1,7 @@
 const std = @import("std");
 const fs_node_ops = @import("fs_node_ops.zig");
 const venom_contracts = @import("venom_contracts.zig");
+const venom_metadata = @import("venom_metadata.zig");
 
 pub const NodeLabelArg = struct {
     key: []const u8,
@@ -240,6 +241,7 @@ fn validateExtraVenomJson(
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, venom_json, .{});
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidProviderConfig;
+    if (!venom_metadata.runtimeKindMatchesRuntimeObject(parsed.value.object)) return error.InvalidProviderConfig;
 
     const venom_id_val = parsed.value.object.get("venom_id") orelse return error.InvalidProviderConfig;
     if (venom_id_val != .string) return error.InvalidProviderConfig;
@@ -267,7 +269,7 @@ fn appendFsVenom(
     defer allocator.free(endpoint);
 
     try out.writer(allocator).print(
-        "{{\"venom_id\":\"fs\",\"kind\":\"fs\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"{s}\"],\"capabilities\":{{\"rw\":{s},\"export_count\":{d}}},\"mounts\":[{{\"mount_id\":\"fs\",\"mount_path\":\"{s}\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"style\":\"plan9\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"fs_roots\":\"export-scoped\"}},\"schema\":{{\"model\":\"namespace-mount\"}},\"help_md\":\"Builtin filesystem namespace driver\"}}",
+        "{{\"venom_id\":\"fs\",\"kind\":\"fs\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"node\"],\"runtime_kind\":\"native\",\"endpoints\":[\"{s}\"],\"capabilities\":{{\"rw\":{s},\"export_count\":{d}}},\"mounts\":[{{\"mount_id\":\"fs\",\"mount_path\":\"{s}\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"style\":\"plan9\"}},\"runtime\":{{\"type\":\"builtin\",\"abi\":\"venom-driver-v1\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"fs_roots\":\"export-scoped\"}},\"schema\":{{\"model\":\"namespace-mount\"}},\"help_md\":\"Builtin filesystem namespace driver\"}}",
         .{
             endpoint,
             if (registry.fs_rw_export_count > 0) "true" else "false",
@@ -294,7 +296,7 @@ fn appendTerminalVenom(
     defer allocator.free(endpoint);
 
     try out.writer(allocator).print(
-        "{{\"venom_id\":\"{s}\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"endpoints\":[\"{s}\"],\"capabilities\":{{\"pty\":true,\"terminal_id\":\"{s}\",\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"{s}\",\"mount_path\":\"{s}\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"style\":\"plan9\",\"interactive\":true,\"invoke\":\"control/invoke.json\",\"paths\":{{\"exec\":\"control/invoke.json\"}}}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"venom-driver-v1\",\"entry\":\"internal-terminal-invoke\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"device\":\"terminal\"}},\"schema\":{s},\"invoke_template\":{s},\"help_md\":\"Terminal namespace driver\"}}",
+        "{{\"venom_id\":\"{s}\",\"kind\":\"terminal\",\"version\":\"1\",\"state\":\"online\",\"host_roles\":[\"node\"],\"binding_scopes\":[\"workspace\"],\"runtime_kind\":\"native\",\"endpoints\":[\"{s}\"],\"capabilities\":{{\"pty\":true,\"terminal_id\":\"{s}\",\"invoke\":true}},\"mounts\":[{{\"mount_id\":\"{s}\",\"mount_path\":\"{s}\",\"state\":\"online\"}}],\"ops\":{{\"model\":\"namespace\",\"style\":\"plan9\",\"interactive\":true,\"invoke\":\"control/invoke.json\",\"paths\":{{\"exec\":\"control/invoke.json\"}}}},\"runtime\":{{\"type\":\"native_proc\",\"abi\":\"venom-driver-v1\",\"entry\":\"internal-terminal-invoke\"}},\"permissions\":{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"device\":\"terminal\"}},\"schema\":{s},\"invoke_template\":{s},\"help_md\":\"Terminal namespace driver\"}}",
         .{
             venom_id,
             endpoint,

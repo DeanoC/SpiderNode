@@ -12,6 +12,7 @@ const zwasm_runtime = @import("zwasm_runtime.zig");
 const venom_manifest = @import("venom_manifest.zig");
 const venom_runtime_manager = @import("venom_runtime_manager.zig");
 const venom_contracts = @import("venom_contracts.zig");
+const venom_metadata = @import("venom_metadata.zig");
 const namespace_driver = @import("namespace_driver.zig");
 const unified = @import("spider-protocol").unified;
 
@@ -1616,6 +1617,7 @@ fn buildNamespaceVenomExportFromVenomJson(
     if (parsed.value != .object) return error.InvalidArguments;
 
     const obj = parsed.value.object;
+    if (!venom_metadata.runtimeKindMatchesRuntimeObject(obj)) return error.InvalidArguments;
     const venom_id = getRequiredString(obj, "venom_id") orelse return error.InvalidArguments;
     const runtime = obj.get("runtime") orelse return null;
     if (runtime != .object) return null;
@@ -2517,12 +2519,12 @@ fn applyRuntimeManagerStateToServiceRegistry(
     var changed = false;
     for (venom_registry.extra_venoms.items) |*entry| {
         const state = runtime_manager.venomState(entry.venom_id) orelse continue;
-        const stats = runtime_manager.venomRuntimeStats(entry.venom_id) orelse continue;
+        const lifecycle = runtime_manager.venomLifecycleSnapshot(entry.venom_id) orelse continue;
         const next_json = try renderVenomJsonWithRuntimeProbeState(
             allocator,
             entry.venom_json,
             state,
-            stats,
+            lifecycle,
         );
         if (std.mem.eql(u8, next_json, entry.venom_json)) {
             allocator.free(next_json);
@@ -2539,7 +2541,7 @@ fn renderVenomJsonWithRuntimeProbeState(
     allocator: std.mem.Allocator,
     venom_json: []const u8,
     state: namespace_driver.VenomState,
-    stats: venom_runtime_manager.VenomRuntimeStats,
+    lifecycle: venom_runtime_manager.VenomLifecycleSnapshot,
 ) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -2563,26 +2565,70 @@ fn renderVenomJsonWithRuntimeProbeState(
     }
 
     const runtime_obj = try ensureJsonObjectField(temp_allocator, root, "runtime");
+    var install_status = std.json.ObjectMap.init(temp_allocator);
+    try jsonObjectPutBool(&install_status, "installed", lifecycle.install.installed);
+    try jsonObjectPutBool(&install_status, "enabled", lifecycle.install.enabled);
+    try jsonObjectPutString(&install_status, "runtime_type", lifecycle.install.runtime_type.asString());
+    try jsonObjectPutValue(runtime_obj, "install", .{ .object = install_status });
+
+    var provider_status = std.json.ObjectMap.init(temp_allocator);
+    try jsonObjectPutString(&provider_status, "state", lifecycle.provider.state.asString());
+    try jsonObjectPutBool(&provider_status, "running", lifecycle.provider.running);
+    try jsonObjectPutI64(&provider_status, "start_attempts_total", clampU64ToI64(lifecycle.provider.start_attempts_total));
+    try jsonObjectPutI64(&provider_status, "restarts_total", clampU64ToI64(lifecycle.provider.restarts_total));
+    try jsonObjectPutI64(&provider_status, "consecutive_failures", lifecycle.provider.consecutive_failures);
+    try jsonObjectPutI64(&provider_status, "backoff_until_ms", lifecycle.provider.backoff_until_ms);
+    if (lifecycle.provider.last_start_ms > 0) {
+        try jsonObjectPutI64(&provider_status, "last_start_ms", lifecycle.provider.last_start_ms);
+    } else {
+        try jsonObjectPutNull(&provider_status, "last_start_ms");
+    }
+    if (lifecycle.provider.last_stop_ms > 0) {
+        try jsonObjectPutI64(&provider_status, "last_stop_ms", lifecycle.provider.last_stop_ms);
+    } else {
+        try jsonObjectPutNull(&provider_status, "last_stop_ms");
+    }
+    try jsonObjectPutI64(&provider_status, "last_transition_ms", lifecycle.provider.last_transition_ms);
+    if (lifecycle.provider.last_healthy_ms > 0) {
+        try jsonObjectPutI64(&provider_status, "last_healthy_ms", lifecycle.provider.last_healthy_ms);
+    } else {
+        try jsonObjectPutNull(&provider_status, "last_healthy_ms");
+    }
+    if (lifecycle.provider.lastError()) |last_error| {
+        try jsonObjectPutString(&provider_status, "last_error", last_error);
+    } else {
+        try jsonObjectPutNull(&provider_status, "last_error");
+    }
+    try jsonObjectPutValue(runtime_obj, "provider", .{ .object = provider_status });
+
+    var policy_status = std.json.ObjectMap.init(temp_allocator);
+    try jsonObjectPutI64(&policy_status, "health_check_interval_ms", clampU64ToI64(lifecycle.policy.health_check_interval_ms));
+    try jsonObjectPutI64(&policy_status, "restart_backoff_ms", clampU64ToI64(lifecycle.policy.restart_backoff_ms));
+    try jsonObjectPutI64(&policy_status, "restart_backoff_max_ms", clampU64ToI64(lifecycle.policy.restart_backoff_max_ms));
+    try jsonObjectPutI64(&policy_status, "max_consecutive_failures", lifecycle.policy.max_consecutive_failures);
+    try jsonObjectPutBool(&policy_status, "auto_disable_on_failures", lifecycle.policy.auto_disable_on_failures);
+    try jsonObjectPutValue(runtime_obj, "policy", .{ .object = policy_status });
+
     var supervision_status = std.json.ObjectMap.init(temp_allocator);
     try jsonObjectPutString(&supervision_status, "state", state_name);
-    try jsonObjectPutBool(&supervision_status, "enabled", stats.enabled);
-    try jsonObjectPutBool(&supervision_status, "running", stats.running);
-    try jsonObjectPutI64(&supervision_status, "start_attempts_total", clampU64ToI64(stats.start_attempts_total));
-    try jsonObjectPutI64(&supervision_status, "restarts_total", clampU64ToI64(stats.restarts_total));
-    try jsonObjectPutI64(&supervision_status, "consecutive_failures", stats.consecutive_failures);
-    try jsonObjectPutI64(&supervision_status, "backoff_until_ms", stats.backoff_until_ms);
-    try jsonObjectPutI64(&supervision_status, "last_transition_ms", stats.last_transition_ms);
-    if (stats.last_healthy_ms > 0) {
-        try jsonObjectPutI64(&supervision_status, "last_healthy_ms", stats.last_healthy_ms);
+    try jsonObjectPutBool(&supervision_status, "enabled", lifecycle.install.enabled);
+    try jsonObjectPutBool(&supervision_status, "running", lifecycle.provider.running);
+    try jsonObjectPutI64(&supervision_status, "start_attempts_total", clampU64ToI64(lifecycle.provider.start_attempts_total));
+    try jsonObjectPutI64(&supervision_status, "restarts_total", clampU64ToI64(lifecycle.provider.restarts_total));
+    try jsonObjectPutI64(&supervision_status, "consecutive_failures", lifecycle.provider.consecutive_failures);
+    try jsonObjectPutI64(&supervision_status, "backoff_until_ms", lifecycle.provider.backoff_until_ms);
+    try jsonObjectPutI64(&supervision_status, "last_transition_ms", lifecycle.provider.last_transition_ms);
+    if (lifecycle.provider.last_healthy_ms > 0) {
+        try jsonObjectPutI64(&supervision_status, "last_healthy_ms", lifecycle.provider.last_healthy_ms);
     } else {
         try jsonObjectPutNull(&supervision_status, "last_healthy_ms");
     }
-    if (stats.lastError()) |last_error| {
+    if (lifecycle.provider.lastError()) |last_error| {
         try jsonObjectPutString(&supervision_status, "last_error", last_error);
     } else {
         try jsonObjectPutNull(&supervision_status, "last_error");
     }
-    const updated_at_ms: i64 = @max(stats.last_transition_ms, stats.last_healthy_ms);
+    const updated_at_ms: i64 = @max(lifecycle.provider.last_transition_ms, lifecycle.provider.last_healthy_ms);
     if (updated_at_ms > 0) {
         try jsonObjectPutI64(&supervision_status, "updated_at_ms", updated_at_ms);
     } else {
@@ -4188,6 +4234,9 @@ test "fs_node_main: runtime probe state overlays service catalog json" {
     );
     try std.testing.expect(first_overlay);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"supervision_status\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"install\":{\"installed\":true,\"enabled\":true,\"runtime_type\":\"native_proc\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"provider\":{\"state\":\"online\",\"running\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"policy\":{\"health_check_interval_ms\":10,\"restart_backoff_ms\":5,\"restart_backoff_max_ms\":20,\"max_consecutive_failures\":0,\"auto_disable_on_failures\":false}") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"state\":\"online\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"last_healthy_ms\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"last_error\":null") != null);
@@ -4207,6 +4256,7 @@ test "fs_node_main: runtime probe state overlays service catalog json" {
     );
     try std.testing.expect(degraded_overlay);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"state\":\"degraded\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"provider\":{\"state\":\"degraded\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"last_error\":\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, registry.extra_venoms.items[0].venom_json, "\"last_transition_ms\":") != null);
 
