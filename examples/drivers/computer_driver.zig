@@ -109,7 +109,7 @@ pub fn main() !void {
 }
 
 fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
-    const accessibility = accessibilityTrusted();
+    const accessibility = uiScriptingAvailable(allocator);
     var screen_capture = false;
 
     const observation_json = if (accessibility)
@@ -170,7 +170,7 @@ fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
 }
 
 fn performAct(allocator: std.mem.Allocator, args: *ActArgs) ![]u8 {
-    const accessibility = accessibilityTrusted();
+    const accessibility = uiScriptingAvailable(allocator);
     if (!accessibility) {
         return std.fmt.allocPrint(
             allocator,
@@ -543,9 +543,15 @@ fn readFileAbsoluteAllocCompat(
     return file.readToEndAlloc(allocator, max_bytes);
 }
 
-fn accessibilityTrusted() bool {
+fn uiScriptingAvailable(allocator: std.mem.Allocator) bool {
     if (builtin.os.tag != .macos) return false;
-    return c.AXIsProcessTrusted() != 0;
+    var result = runAppleScript(allocator, &.{
+        "tell application \"System Events\"",
+        "count of application processes",
+        "end tell",
+    }) catch return false;
+    defer result.deinit(allocator);
+    return result.exit_code == 0;
 }
 
 fn fatal(msg: []const u8) noreturn {
