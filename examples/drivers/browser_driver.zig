@@ -5,6 +5,259 @@ const capability = @import("spiderweb_node").macos_capability_venoms;
 const max_payload_bytes: usize = 1024 * 1024;
 const max_capture_bytes: usize = 512 * 1024;
 const screenshot_resize_px: []const u8 = "720";
+const playwright_helper_source =
+    \\const fs = require("fs");
+    \\const os = require("os");
+    \\const path = require("path");
+    \\const cp = require("child_process");
+    \\
+    \\function loadPlaywright() {
+    \\  try {
+    \\    return require("playwright");
+    \\  } catch (_) {}
+    \\  try {
+    \\    const npmRoot = cp.execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+    \\    if (npmRoot) return require(path.join(npmRoot, "playwright"));
+    \\  } catch (_) {}
+    \\  return null;
+    \\}
+    \\
+    \\function readState(statePath) {
+    \\  try {
+    \\    return JSON.parse(fs.readFileSync(statePath, "utf8"));
+    \\  } catch (_) {
+    \\    return {
+    \\      current_url: null,
+    \\      active_tab_index: 1,
+    \\      inputs: {},
+    \\      last_click_selector: null
+    \\    };
+    \\  }
+    \\}
+    \\
+    \\function writeState(statePath, state) {
+    \\  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    \\  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+    \\}
+    \\
+    \\function statusForReady() {
+    \\  return {
+    \\    state: "ok",
+    \\    browser_ready: true,
+    \\    browser_app: "Playwright Chromium",
+    \\    driver: "playwright"
+    \\  };
+    \\}
+    \\
+    \\function healthForReady() {
+    \\  return {
+    \\    state: "online",
+    \\    platform: "macos",
+    \\    browser_ready: true,
+    \\    browser_app: "Playwright Chromium",
+    \\    driver: "playwright"
+    \\  };
+    \\}
+    \\
+    \\function degraded(reason, detail) {
+    \\  return {
+    \\    ok: true,
+    \\    venom_id: "browser-main",
+    \\    op: "observe",
+    \\    observation: {
+    \\      ready: false,
+    \\      browser_app: null,
+    \\      current_url: null,
+    \\      current_title: null,
+    \\      tabs: [],
+    \\      readiness_state: reason
+    \\    },
+    \\    status: { state: "degraded", reason, detail, driver: "playwright" },
+    \\    health: { state: "degraded", platform: "macos", browser_ready: false, reason, detail, driver: "playwright" },
+    \\    artifact_updates: [
+    \\      { path: "artifacts/last_observation.json", content: JSON.stringify({ ready: false, reason, detail }) },
+    \\      { path: "artifacts/last_dom.json", content: "{}" }
+    \\    ]
+    \\  };
+    \\}
+    \\
+    \\async function ensurePage(context) {
+    \\  const pages = context.pages();
+    \\  if (pages.length > 0) return pages[0];
+    \\  return await context.newPage();
+    \\}
+    \\
+    \\async function restoreInputs(page, state) {
+    \\  const inputs = state.inputs || {};
+    \\  for (const [selector, value] of Object.entries(inputs)) {
+    \\    try {
+    \\      await page.locator(selector).fill(String(value));
+    \\    } catch (_) {}
+    \\  }
+    \\}
+    \\
+    \\async function replayClick(page, state) {
+    \\  if (!state.last_click_selector) return;
+    \\  try {
+    \\    await page.locator(state.last_click_selector).click();
+    \\  } catch (_) {}
+    \\}
+    \\
+    \\async function snapshotObservation(page) {
+    \\  let title = "";
+    \\  try { title = await page.title(); } catch (_) {}
+    \\  let url = "";
+    \\  try { url = page.url(); } catch (_) {}
+    \\  return {
+    \\    ready: true,
+    \\    browser_app: "Playwright Chromium",
+    \\    current_url: url,
+    \\    current_title: title,
+    \\    tabs: [{ index: 1, title, url }],
+    \\    readiness_state: "ready"
+    \\  };
+    \\}
+    \\
+    \\function keyCombo(action) {
+    \\  const mapping = { command: "Meta", option: "Alt", shift: "Shift", control: "Control" };
+    \\  const modifiers = (action.modifiers || []).map((value) => mapping[value] || value);
+    \\  return [...modifiers, action.key].join("+");
+    \\}
+    \\
+    \\async function run() {
+    \\  const requestPath = process.argv[2];
+    \\  const request = JSON.parse(fs.readFileSync(requestPath, "utf8"));
+    \\  const statePath = process.env.SPIDERWEB_BROWSER_STATE_PATH || path.join(os.tmpdir(), "spiderweb-browser-playwright-state.json");
+    \\  const profileDir = process.env.SPIDERWEB_BROWSER_PROFILE_DIR || path.join(os.tmpdir(), "spiderweb-browser-playwright-profile");
+    \\  const state = readState(statePath);
+    \\  const playwright = loadPlaywright();
+    \\  if (!playwright || !playwright.chromium) {
+    \\    process.stdout.write(JSON.stringify(degraded("playwright_missing", "Playwright is not available to the browser venom driver")));
+    \\    return;
+    \\  }
+    \\
+    \\  let context;
+    \\  try {
+    \\    context = await playwright.chromium.launchPersistentContext(profileDir, {
+    \\      headless: false,
+    \\      viewport: { width: 1280, height: 900 }
+    \\    });
+    \\  } catch (error) {
+    \\    process.stdout.write(JSON.stringify(degraded("browser_launch_failed", String(error && error.message || error))));
+    \\    return;
+    \\  }
+    \\
+    \\  try {
+    \\    const page = await ensurePage(context);
+    \\    if (state.current_url) {
+    \\      try {
+    \\        await page.goto(state.current_url, { waitUntil: "domcontentloaded", timeout: 15000 });
+    \\      } catch (_) {}
+    \\    }
+    \\    await restoreInputs(page, state);
+    \\
+    \\    if (request.op === "observe") {
+    \\      await replayClick(page, state);
+    \\      const observation = await snapshotObservation(page);
+    \\      state.current_url = observation.current_url || state.current_url || null;
+    \\      const includeDom = !request.arguments || request.arguments.include_dom !== false;
+    \\      const includeScreenshot = !!(request.arguments && request.arguments.include_screenshot);
+    \\      const dom = includeDom
+    \\        ? {
+    \\            title: observation.current_title,
+    \\            url: observation.current_url,
+    \\            html: (await page.content()).slice(0, 200000)
+    \\          }
+    \\        : {};
+    \\      const artifactUpdates = [
+    \\        { path: "artifacts/last_observation.json", content: JSON.stringify(observation) },
+    \\        { path: "artifacts/last_dom.json", content: JSON.stringify(dom) }
+    \\      ];
+    \\      if (includeScreenshot) {
+    \\        const screenshot = await page.screenshot({ type: "png" });
+    \\        artifactUpdates.push({
+    \\          path: "artifacts/last_screenshot.png",
+    \\          content_b64: screenshot.toString("base64")
+    \\        });
+    \\      }
+    \\      process.stdout.write(JSON.stringify({
+    \\        ok: true,
+    \\        venom_id: "browser-main",
+    \\        op: "observe",
+    \\        observation,
+    \\        status: statusForReady(),
+    \\        health: healthForReady(),
+    \\        artifact_updates: artifactUpdates
+    \\      }));
+    \\      return;
+    \\    }
+    \\
+    \\    if (request.op !== "act") {
+    \\      process.stdout.write(JSON.stringify(degraded("invalid_op", `Unsupported op: ${request.op}`)));
+    \\      return;
+    \\    }
+    \\
+    \\    const action = request.arguments || {};
+    \\    let actionResult = { ok: true, action: action.action || null };
+    \\    try {
+    \\      switch (action.action) {
+    \\        case "navigate":
+    \\          await page.goto(action.url, { waitUntil: "domcontentloaded", timeout: 15000 });
+    \\          state.current_url = page.url();
+    \\          state.inputs = {};
+    \\          state.last_click_selector = null;
+    \\          break;
+    \\        case "activate_tab":
+    \\          if ((action.tab_index || 1) !== 1) throw new Error("tab_unavailable");
+    \\          await page.bringToFront();
+    \\          state.active_tab_index = 1;
+    \\          break;
+    \\        case "click":
+    \\          await page.locator(action.selector).click();
+    \\          state.last_click_selector = action.selector;
+    \\          break;
+    \\        case "text_input":
+    \\          await page.locator(action.selector).fill(action.text);
+    \\          state.inputs = state.inputs || {};
+    \\          state.inputs[action.selector] = action.text;
+    \\          break;
+    \\        case "key_combo":
+    \\          await page.keyboard.press(keyCombo(action));
+    \\          break;
+    \\        default:
+    \\          throw new Error(`unsupported_action:${action.action}`);
+    \\      }
+    \\    } catch (error) {
+    \\      actionResult = {
+    \\        ok: false,
+    \\        action: action.action || null,
+    \\        reason: "playwright_action_failed",
+    \\        detail: String(error && error.message || error)
+    \\      };
+    \\    }
+    \\
+    \\    const observation = await snapshotObservation(page);
+    \\    if (observation.current_url) state.current_url = observation.current_url;
+    \\    process.stdout.write(JSON.stringify({
+    \\      ok: true,
+    \\      venom_id: "browser-main",
+    \\      op: "act",
+    \\      action_result: actionResult,
+    \\      observation,
+    \\      status: statusForReady(),
+    \\      health: healthForReady()
+    \\    }));
+    \\  } finally {
+    \\    writeState(statePath, state);
+    \\    await context.close().catch(() => {});
+    \\  }
+    \\}
+    \\
+    \\run().catch((error) => {
+    \\  const response = degraded("playwright_runtime_failed", String(error && error.stack || error && error.message || error));
+    \\  process.stdout.write(JSON.stringify(response));
+    \\});
+;
 
 const BrowserApp = struct {
     app_name: []const u8,
@@ -97,8 +350,8 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, op, "observe")) {
-        const args = try parseObserveArgs(parsed.value.object);
-        const rendered = try performObserve(allocator, args);
+        _ = try parseObserveArgs(parsed.value.object);
+        const rendered = try runPlaywrightDriver(allocator, trimmed);
         defer allocator.free(rendered);
         try std.fs.File.stdout().writeAll(rendered);
         return;
@@ -106,7 +359,7 @@ pub fn main() !void {
     if (std.mem.eql(u8, op, "act")) {
         var args = try parseActArgs(allocator, parsed.value.object);
         defer args.deinit(allocator);
-        const rendered = try performAct(allocator, &args);
+        const rendered = try runPlaywrightDriver(allocator, trimmed);
         defer allocator.free(rendered);
         try std.fs.File.stdout().writeAll(rendered);
         return;
@@ -279,6 +532,24 @@ fn resolveBrowserApp() ?BrowserApp {
         return browser;
     }
     return null;
+}
+
+fn runPlaywrightDriver(allocator: std.mem.Allocator, request_json: []const u8) ![]u8 {
+    const timestamp = std.time.milliTimestamp();
+    const helper_path = try std.fmt.allocPrint(allocator, "/tmp/spiderweb-browser-playwright-{d}.js", .{timestamp});
+    defer allocator.free(helper_path);
+    const request_path = try std.fmt.allocPrint(allocator, "/tmp/spiderweb-browser-playwright-{d}.json", .{timestamp});
+    defer allocator.free(request_path);
+
+    try writeFileAbsoluteCompat(helper_path, playwright_helper_source);
+    defer std.fs.deleteFileAbsolute(helper_path) catch {};
+    try writeFileAbsoluteCompat(request_path, request_json);
+    defer std.fs.deleteFileAbsolute(request_path) catch {};
+
+    var result = try runCommand(allocator, &.{ "node", helper_path, request_path });
+    defer result.deinit(allocator);
+    if (result.exit_code != 0) return error.CommandFailed;
+    return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n"));
 }
 
 fn collectObservationJson(allocator: std.mem.Allocator, app_name: []const u8) ![]u8 {
@@ -519,6 +790,12 @@ fn readFileAbsoluteAllocCompat(
     const file = std.fs.openFileAbsolute(path, .{}) catch return error.FileNotFound;
     defer file.close();
     return file.readToEndAlloc(allocator, max_bytes);
+}
+
+fn writeFileAbsoluteCompat(path: []const u8, contents: []const u8) !void {
+    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(contents);
 }
 
 fn fatal(msg: []const u8) noreturn {
