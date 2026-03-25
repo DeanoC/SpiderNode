@@ -414,15 +414,11 @@ fn typeText(allocator: std.mem.Allocator, text: []const u8) !void {
             "key code 51\n" ++
             "delay 0.05\n" ++
             "end try\n" ++
-            "keystroke \"{s}\"\n" ++
-            "else\n" ++
-            "keystroke \"{s}\"\n" ++
             "end if\n" ++
-            "on error\n" ++
-            "keystroke \"{s}\"\n" ++
             "end try\n" ++
+            "keystroke \"{s}\"\n" ++
             "end tell",
-        .{ escaped, escaped, escaped },
+        .{ escaped },
     );
     defer allocator.free(script);
     try runAppleScriptExpectOk(allocator, &.{script});
@@ -722,19 +718,15 @@ test "computer_driver: type text script prefers direct text field set" {
             "key code 51\n" ++
             "delay 0.05\n" ++
             "end try\n" ++
-            "keystroke \"{s}\"\n" ++
-            "else\n" ++
-            "keystroke \"{s}\"\n" ++
             "end if\n" ++
-            "on error\n" ++
-            "keystroke \"{s}\"\n" ++
             "end try\n" ++
+            "keystroke \"{s}\"\n" ++
             "end tell",
-        .{ escaped, escaped, escaped },
+        .{ escaped },
     );
     defer allocator.free(script);
 
     try std.testing.expect(std.mem.indexOf(u8, script, "set targetField to first text field of first window of targetProc") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "click targetField") != null);
-    try std.testing.expect(std.mem.indexOf(u8, script, "keystroke \"Hello from hardening\"") != null);
+    try std.testing.expect(std.mem.count(u8, script, "keystroke \"Hello from hardening\"") == 1);
 }
