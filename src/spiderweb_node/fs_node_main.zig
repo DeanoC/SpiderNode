@@ -291,6 +291,7 @@ const NamespaceVenomExportSpecOwned = struct {
     module_path: ?[]u8 = null,
     wasm_entrypoint: ?[]u8 = null,
     args: std.ArrayListUnmanaged([]u8) = .{},
+    env: std.ArrayListUnmanaged(fs_node_ops.NamespaceVenomEnvVar) = .{},
     timeout_ms: u64 = 30_000,
     fuel: ?u64 = null,
     max_memory_bytes: ?u64 = null,
@@ -310,6 +311,11 @@ const NamespaceVenomExportSpecOwned = struct {
         if (self.wasm_entrypoint) |value| allocator.free(value);
         for (self.args.items) |arg| allocator.free(arg);
         self.args.deinit(allocator);
+        for (self.env.items) |entry| {
+            allocator.free(@constCast(entry.key));
+            allocator.free(@constCast(entry.value));
+        }
+        self.env.deinit(allocator);
         if (self.help_md) |value| allocator.free(value);
         if (self.schema_json) |value| allocator.free(value);
         if (self.invoke_template_json) |value| allocator.free(value);
@@ -332,6 +338,7 @@ const NamespaceVenomExportSpecOwned = struct {
                 .module_path = self.module_path,
                 .wasm_entrypoint = self.wasm_entrypoint,
                 .args = self.args.items,
+                .env = self.env.items,
                 .timeout_ms = self.timeout_ms,
                 .fuel = self.fuel,
                 .max_memory_bytes = self.max_memory_bytes,
@@ -1733,6 +1740,19 @@ fn buildNamespaceVenomExportFromVenomJson(
         for (raw_args.array.items) |item| {
             if (item != .string or item.string.len == 0) return error.InvalidArguments;
             try owned.args.append(allocator, try allocator.dupe(u8, item.string));
+        }
+    }
+    if (runtime.object.get("env")) |raw_env| {
+        if (raw_env != .object) return error.InvalidArguments;
+        var it = raw_env.object.iterator();
+        while (it.next()) |entry| {
+            const key = std.mem.trim(u8, entry.key_ptr.*, " \t\r\n");
+            if (key.len == 0) return error.InvalidArguments;
+            if (entry.value_ptr.* != .string) return error.InvalidArguments;
+            try owned.env.append(allocator, .{
+                .key = try allocator.dupe(u8, key),
+                .value = try allocator.dupe(u8, entry.value_ptr.string),
+            });
         }
     }
 
@@ -3864,7 +3884,14 @@ test "fs_node_main: computer and browser manifests build namespace exports" {
     try std.testing.expectEqualStrings("computer-main", owned_computer.name);
     try std.testing.expectEqualStrings("./spiderweb-computer-driver", owned_computer.executable_path.?);
 
-    const browser_manifest = try macos_capability_venoms.renderBrowserManifestJson(allocator, "./spiderweb-browser-driver");
+    const browser_manifest = try macos_capability_venoms.renderBrowserManifestJsonWithRuntimePaths(
+        allocator,
+        "./spiderweb-browser-driver",
+        .{
+            .state_path = "/tmp/browser-state.json",
+            .profile_dir = "/tmp/browser-profile",
+        },
+    );
     defer allocator.free(browser_manifest);
     const browser_export = try buildNamespaceVenomExportFromVenomJson(allocator, browser_manifest);
     try std.testing.expect(browser_export != null);
@@ -3872,6 +3899,11 @@ test "fs_node_main: computer and browser manifests build namespace exports" {
     defer owned_browser.deinit(allocator);
     try std.testing.expectEqualStrings("browser-main", owned_browser.name);
     try std.testing.expectEqualStrings("./spiderweb-browser-driver", owned_browser.executable_path.?);
+    try std.testing.expectEqual(@as(usize, 2), owned_browser.env.items.len);
+    try std.testing.expectEqualStrings(macos_capability_venoms.browser_state_path_env_var, owned_browser.env.items[0].key);
+    try std.testing.expectEqualStrings("/tmp/browser-state.json", owned_browser.env.items[0].value);
+    try std.testing.expectEqualStrings(macos_capability_venoms.browser_profile_dir_env_var, owned_browser.env.items[1].key);
+    try std.testing.expectEqualStrings("/tmp/browser-profile", owned_browser.env.items[1].value);
 }
 
 test "fs_node_main: runtime validator rejects unknown runtime type" {

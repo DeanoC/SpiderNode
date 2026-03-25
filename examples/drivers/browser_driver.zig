@@ -5,6 +5,8 @@ const capability = @import("spiderweb_node").macos_capability_venoms;
 const max_payload_bytes: usize = 1024 * 1024;
 const max_capture_bytes: usize = 512 * 1024;
 const screenshot_resize_px: []const u8 = "720";
+const browser_state_path_env_var = capability.browser_state_path_env_var;
+const browser_profile_dir_env_var = capability.browser_profile_dir_env_var;
 const playwright_helper_source =
     \\const fs = require("fs");
     \\const os = require("os");
@@ -13,11 +15,11 @@ const playwright_helper_source =
     \\
     \\function loadPlaywright() {
     \\  try {
-    \\    return require("playwright");
+    \\    return { playwright: require("playwright"), source: "local_require" };
     \\  } catch (_) {}
     \\  try {
     \\    const npmRoot = cp.execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
-    \\    if (npmRoot) return require(path.join(npmRoot, "playwright"));
+    \\    if (npmRoot) return { playwright: require(path.join(npmRoot, "playwright")), source: "npm_global" };
     \\  } catch (_) {}
     \\  return null;
     \\}
@@ -40,26 +42,49 @@ const playwright_helper_source =
     \\  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
     \\}
     \\
-    \\function statusForReady() {
+    \\function guidanceFor(reason) {
+    \\  switch (reason) {
+    \\    case "playwright_missing":
+    \\      return "Install Playwright so the node can launch managed Chromium for the browser venom.";
+    \\    case "browser_launch_failed":
+    \\      return "Check the browser profile directory permissions and whether Playwright Chromium can launch on this host.";
+    \\    case "playwright_runtime_failed":
+    \\      return "Inspect the browser venom detail and the helper stderr, then retry the operation.";
+    \\    default:
+    \\      return "Inspect the browser venom detail and retry the operation.";
+    \\  }
+    \\}
+    \\
+    \\function statusForReady(statePath, profileDir, playwrightSource) {
     \\  return {
     \\    state: "ok",
+    \\    readiness_state: "ready",
     \\    browser_ready: true,
     \\    browser_app: "Playwright Chromium",
-    \\    driver: "playwright"
+    \\    driver: "playwright",
+    \\    playwright_available: true,
+    \\    playwright_source: playwrightSource,
+    \\    state_path: statePath,
+    \\    profile_dir: profileDir
     \\  };
     \\}
     \\
-    \\function healthForReady() {
+    \\function healthForReady(statePath, profileDir, playwrightSource) {
     \\  return {
     \\    state: "online",
     \\    platform: "macos",
+    \\    readiness_state: "ready",
     \\    browser_ready: true,
     \\    browser_app: "Playwright Chromium",
-    \\    driver: "playwright"
+    \\    driver: "playwright",
+    \\    playwright_available: true,
+    \\    playwright_source: playwrightSource,
+    \\    state_path: statePath,
+    \\    profile_dir: profileDir
     \\  };
     \\}
     \\
-    \\function degraded(reason, detail) {
+    \\function degraded(reason, detail, statePath, profileDir, playwrightSource) {
     \\  return {
     \\    ok: true,
     \\    venom_id: "browser-main",
@@ -70,12 +95,40 @@ const playwright_helper_source =
     \\      current_url: null,
     \\      current_title: null,
     \\      tabs: [],
-    \\      readiness_state: reason
+    \\      readiness_state: reason,
+    \\      driver: "playwright",
+    \\      state_path: statePath,
+    \\      profile_dir: profileDir
     \\    },
-    \\    status: { state: "degraded", reason, detail, driver: "playwright" },
-    \\    health: { state: "degraded", platform: "macos", browser_ready: false, reason, detail, driver: "playwright" },
+    \\    status: {
+    \\      state: "degraded",
+    \\      readiness_state: reason,
+    \\      browser_ready: false,
+    \\      reason,
+    \\      detail,
+    \\      guidance: guidanceFor(reason),
+    \\      driver: "playwright",
+    \\      playwright_available: reason !== "playwright_missing",
+    \\      playwright_source: playwrightSource,
+    \\      state_path: statePath,
+    \\      profile_dir: profileDir
+    \\    },
+    \\    health: {
+    \\      state: "degraded",
+    \\      platform: "macos",
+    \\      readiness_state: reason,
+    \\      browser_ready: false,
+    \\      reason,
+    \\      detail,
+    \\      guidance: guidanceFor(reason),
+    \\      driver: "playwright",
+    \\      playwright_available: reason !== "playwright_missing",
+    \\      playwright_source: playwrightSource,
+    \\      state_path: statePath,
+    \\      profile_dir: profileDir
+    \\    },
     \\    artifact_updates: [
-    \\      { path: "artifacts/last_observation.json", content: JSON.stringify({ ready: false, reason, detail }) },
+    \\      { path: "artifacts/last_observation.json", content: JSON.stringify({ ready: false, reason, detail, driver: "playwright", state_path: statePath, profile_dir: profileDir }) },
     \\      { path: "artifacts/last_dom.json", content: "{}" }
     \\    ]
     \\  };
@@ -130,9 +183,11 @@ const playwright_helper_source =
     \\  const statePath = process.env.SPIDERWEB_BROWSER_STATE_PATH || path.join(os.tmpdir(), "spiderweb-browser-playwright-state.json");
     \\  const profileDir = process.env.SPIDERWEB_BROWSER_PROFILE_DIR || path.join(os.tmpdir(), "spiderweb-browser-playwright-profile");
     \\  const state = readState(statePath);
-    \\  const playwright = loadPlaywright();
+    \\  const playwrightBundle = loadPlaywright();
+    \\  const playwright = playwrightBundle && playwrightBundle.playwright;
+    \\  const playwrightSource = playwrightBundle ? playwrightBundle.source : "missing";
     \\  if (!playwright || !playwright.chromium) {
-    \\    process.stdout.write(JSON.stringify(degraded("playwright_missing", "Playwright is not available to the browser venom driver")));
+    \\    process.stdout.write(JSON.stringify(degraded("playwright_missing", "Playwright is not available to the browser venom driver", statePath, profileDir, playwrightSource)));
     \\    return;
     \\  }
     \\
@@ -143,7 +198,7 @@ const playwright_helper_source =
     \\      viewport: { width: 1280, height: 900 }
     \\    });
     \\  } catch (error) {
-    \\    process.stdout.write(JSON.stringify(degraded("browser_launch_failed", String(error && error.message || error))));
+    \\    process.stdout.write(JSON.stringify(degraded("browser_launch_failed", String(error && error.message || error), statePath, profileDir, playwrightSource)));
     \\    return;
     \\  }
     \\
@@ -185,15 +240,15 @@ const playwright_helper_source =
     \\        venom_id: "browser-main",
     \\        op: "observe",
     \\        observation,
-    \\        status: statusForReady(),
-    \\        health: healthForReady(),
+    \\        status: statusForReady(statePath, profileDir, playwrightSource),
+    \\        health: healthForReady(statePath, profileDir, playwrightSource),
     \\        artifact_updates: artifactUpdates
     \\      }));
     \\      return;
     \\    }
     \\
     \\    if (request.op !== "act") {
-    \\      process.stdout.write(JSON.stringify(degraded("invalid_op", `Unsupported op: ${request.op}`)));
+    \\      process.stdout.write(JSON.stringify(degraded("invalid_op", `Unsupported op: ${request.op}`, statePath, profileDir, playwrightSource)));
     \\      return;
     \\    }
     \\
@@ -244,8 +299,8 @@ const playwright_helper_source =
     \\      op: "act",
     \\      action_result: actionResult,
     \\      observation,
-    \\      status: statusForReady(),
-    \\      health: healthForReady()
+    \\      status: statusForReady(statePath, profileDir, playwrightSource),
+    \\      health: healthForReady(statePath, profileDir, playwrightSource)
     \\    }));
     \\  } finally {
     \\    writeState(statePath, state);
@@ -254,7 +309,9 @@ const playwright_helper_source =
     \\}
     \\
     \\run().catch((error) => {
-    \\  const response = degraded("playwright_runtime_failed", String(error && error.stack || error && error.message || error));
+    \\  const statePath = process.env.SPIDERWEB_BROWSER_STATE_PATH || path.join(os.tmpdir(), "spiderweb-browser-playwright-state.json");
+    \\  const profileDir = process.env.SPIDERWEB_BROWSER_PROFILE_DIR || path.join(os.tmpdir(), "spiderweb-browser-playwright-profile");
+    \\  const response = degraded("playwright_runtime_failed", String(error && error.stack || error && error.message || error), statePath, profileDir, "unknown");
     \\  process.stdout.write(JSON.stringify(response));
     \\});
 ;
@@ -840,4 +897,13 @@ test "browser_driver: parse observe payload honors include flags" {
     const args = try parseObserveArgs(parsed.value.object);
     try std.testing.expect(!args.include_dom);
     try std.testing.expect(!args.include_screenshot);
+}
+
+test "browser_driver: helper advertises runtime readiness metadata" {
+    try std.testing.expect(std.mem.indexOf(u8, playwright_helper_source, browser_state_path_env_var) != null);
+    try std.testing.expect(std.mem.indexOf(u8, playwright_helper_source, browser_profile_dir_env_var) != null);
+    try std.testing.expect(std.mem.indexOf(u8, playwright_helper_source, "playwright_available") != null);
+    try std.testing.expect(std.mem.indexOf(u8, playwright_helper_source, "guidanceFor(reason)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, playwright_helper_source, "state_path") != null);
+    try std.testing.expect(std.mem.indexOf(u8, playwright_helper_source, "profile_dir") != null);
 }

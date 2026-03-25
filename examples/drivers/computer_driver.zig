@@ -61,6 +61,12 @@ const ArtifactUpdate = struct {
     content_b64: ?[]u8 = null,
 };
 
+const PermissionState = struct {
+    accessibility: bool,
+    screen_capture_checked: bool = false,
+    screen_capture: bool = false,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -109,26 +115,20 @@ pub fn main() !void {
 }
 
 fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
-    const accessibility = uiScriptingAvailable(allocator);
-    var screen_capture = false;
+    var permissions = PermissionState{
+        .accessibility = uiScriptingAvailable(allocator),
+        .screen_capture_checked = args.include_screenshot,
+    };
 
-    const observation_json = if (accessibility)
+    const observation_json = if (permissions.accessibility)
         try collectObservationJson(allocator)
     else
         try allocator.dupe(u8, "{\"focused_window\":null,\"windows\":[],\"ui_tree\":null,\"permission_state\":{\"accessibility\":false,\"screen_capture\":false}}");
     defer allocator.free(observation_json);
 
-    const status_json = try std.fmt.allocPrint(
-        allocator,
-        "{{\"state\":\"{s}\",\"permissions\":{{\"accessibility\":{},\"screen_capture\":{}}},\"device\":\"computer\"}}",
-        .{ if (accessibility) "ok" else "degraded", accessibility, false },
-    );
+    const status_json = try renderComputerStatusJson(allocator, permissions);
     defer allocator.free(status_json);
-    const health_json = try std.fmt.allocPrint(
-        allocator,
-        "{{\"state\":\"{s}\",\"platform\":\"macos\",\"permissions\":{{\"accessibility\":{},\"screen_capture\":{}}}}}",
-        .{ if (accessibility) "online" else "degraded", accessibility, false },
-    );
+    const health_json = try renderComputerHealthJson(allocator, permissions);
     defer allocator.free(health_json);
 
     var updates = std.ArrayListUnmanaged(ArtifactUpdate){};
@@ -143,7 +143,7 @@ fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
 
     if (args.include_screenshot) {
         if (try captureScreenshotBase64(allocator)) |encoded| {
-            screen_capture = true;
+            permissions.screen_capture = true;
             errdefer allocator.free(encoded);
             try updates.append(allocator, .{
                 .path = "artifacts/last_screenshot.png",
@@ -158,11 +158,11 @@ fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
         .{
             capability.computer_venom_id,
             observation_json,
-            if (screen_capture) "\"artifacts/last_screenshot.png\"" else "null",
+            if (permissions.screen_capture) "\"artifacts/last_screenshot.png\"" else "null",
             status_json,
-            if (accessibility) "online" else "degraded",
-            accessibility,
-            screen_capture,
+            if (permissions.accessibility) "online" else "degraded",
+            permissions.accessibility,
+            permissions.screen_capture,
             try renderArtifactUpdatesJson(allocator, updates.items),
         },
     );
@@ -170,27 +170,74 @@ fn performObserve(allocator: std.mem.Allocator, args: ObserveArgs) ![]u8 {
 }
 
 fn performAct(allocator: std.mem.Allocator, args: *ActArgs) ![]u8 {
-    const accessibility = uiScriptingAvailable(allocator);
-    if (!accessibility) {
+    const permissions = PermissionState{
+        .accessibility = uiScriptingAvailable(allocator),
+    };
+    const status_json = try renderComputerStatusJson(allocator, permissions);
+    defer allocator.free(status_json);
+    const health_json = try renderComputerHealthJson(allocator, permissions);
+    defer allocator.free(health_json);
+    if (!permissions.accessibility) {
         return std.fmt.allocPrint(
             allocator,
-            "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":false,\"reason\":\"accessibility_not_granted\",\"action\":\"{s}\"}},\"status\":{{\"state\":\"degraded\",\"permissions\":{{\"accessibility\":false,\"screen_capture\":false}}}},\"health\":{{\"state\":\"degraded\",\"platform\":\"macos\",\"permissions\":{{\"accessibility\":false,\"screen_capture\":false}}}}}}",
-            .{ capability.computer_venom_id, @tagName(args.action) },
+            "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":false,\"reason\":\"accessibility_not_granted\",\"action\":\"{s}\",\"guidance\":\"Enable Accessibility for the host app controlling System Events to allow desktop actuation.\"}},\"status\":{s},\"health\":{s}}}",
+            .{ capability.computer_venom_id, @tagName(args.action), status_json, health_json },
         );
     }
 
-    switch (args.action) {
-        .activate => try activateApp(allocator, args.app_name.?),
-        .focus_window => try focusWindow(allocator, args.app_name.?, args.window_title.?),
-        .primary_tap => try clickFrontButton(allocator, args.button_title.?),
-        .text_input => try typeText(allocator, args.text.?),
-        .key_combo => try sendKeyCombo(allocator, args.key.?, args.modifiers.items),
-    }
+    const action_attempt = switch (args.action) {
+        .activate => activateApp(allocator, args.app_name.?),
+        .focus_window => focusWindow(allocator, args.app_name.?, args.window_title.?),
+        .primary_tap => clickFrontButton(allocator, args.button_title.?),
+        .text_input => typeText(allocator, args.text.?),
+        .key_combo => sendKeyCombo(allocator, args.key.?, args.modifiers.items),
+    };
+    _ = action_attempt catch |err| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":false,\"action\":\"{s}\",\"reason\":\"action_failed\",\"detail\":\"{s}\"}},\"status\":{s},\"health\":{s}}}",
+            .{ capability.computer_venom_id, @tagName(args.action), @errorName(err), status_json, health_json },
+        );
+    };
 
     return std.fmt.allocPrint(
         allocator,
-        "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":true,\"action\":\"{s}\"}},\"status\":{{\"state\":\"ok\",\"permissions\":{{\"accessibility\":true,\"screen_capture\":false}}}},\"health\":{{\"state\":\"online\",\"platform\":\"macos\",\"permissions\":{{\"accessibility\":true,\"screen_capture\":false}}}}}}",
-        .{ capability.computer_venom_id, @tagName(args.action) },
+        "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":true,\"action\":\"{s}\"}},\"status\":{s},\"health\":{s}}}",
+        .{ capability.computer_venom_id, @tagName(args.action), status_json, health_json },
+    );
+}
+
+fn renderComputerStatusJson(allocator: std.mem.Allocator, permissions: PermissionState) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"state\":\"{s}\",\"device\":\"computer\",\"readiness_state\":\"{s}\",\"observe_ready\":{},\"act_ready\":{},\"screenshot_ready\":{},\"permissions\":{{\"accessibility\":{{\"granted\":{},\"required\":true,\"guidance\":\"Enable Accessibility for the host app controlling System Events to allow desktop observation and actuation.\"}},\"screen_capture\":{{\"granted\":{},\"checked\":{},\"required\":false,\"guidance\":\"Enable Screen Recording for the host app if you want screenshot artifacts from the computer venom.\"}}}}}}",
+        .{
+            if (permissions.accessibility) "ok" else "degraded",
+            if (permissions.accessibility) "ready" else "accessibility_required",
+            permissions.accessibility,
+            permissions.accessibility,
+            permissions.screen_capture,
+            permissions.accessibility,
+            permissions.screen_capture,
+            permissions.screen_capture_checked,
+        },
+    );
+}
+
+fn renderComputerHealthJson(allocator: std.mem.Allocator, permissions: PermissionState) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"state\":\"{s}\",\"platform\":\"macos\",\"readiness_state\":\"{s}\",\"observe_ready\":{},\"act_ready\":{},\"screenshot_ready\":{},\"permissions\":{{\"accessibility\":{{\"granted\":{},\"required\":true,\"guidance\":\"Enable Accessibility for the host app controlling System Events to allow desktop observation and actuation.\"}},\"screen_capture\":{{\"granted\":{},\"checked\":{},\"required\":false,\"guidance\":\"Enable Screen Recording for the host app if you want screenshot artifacts from the computer venom.\"}}}}}}",
+        .{
+            if (permissions.accessibility) "online" else "degraded",
+            if (permissions.accessibility) "ready" else "accessibility_required",
+            permissions.accessibility,
+            permissions.accessibility,
+            permissions.screen_capture,
+            permissions.accessibility,
+            permissions.screen_capture,
+            permissions.screen_capture_checked,
+        },
     );
 }
 
@@ -289,9 +336,24 @@ fn collectObservationJson(allocator: std.mem.Allocator) ![]u8 {
 fn activateApp(allocator: std.mem.Allocator, app_name: []const u8) !void {
     const escaped = try appleScriptEscape(allocator, app_name);
     defer allocator.free(escaped);
-    const line = try std.fmt.allocPrint(allocator, "tell application \"{s}\" to activate", .{escaped});
-    defer allocator.free(line);
-    try runAppleScriptExpectOk(allocator, &.{line});
+    const line1 = try allocator.dupe(u8, "tell application \"System Events\"");
+    defer allocator.free(line1);
+    const line2 = try std.fmt.allocPrint(allocator, "set targetProc to first application process whose name is \"{s}\"", .{escaped});
+    defer allocator.free(line2);
+    const line3 = try allocator.dupe(u8, "set frontmost of targetProc to true");
+    defer allocator.free(line3);
+    const line4 = try allocator.dupe(u8, "delay 0.2");
+    defer allocator.free(line4);
+    const line5 = try allocator.dupe(u8, "return name of first application process whose frontmost is true");
+    defer allocator.free(line5);
+    const line6 = try allocator.dupe(u8, "end tell");
+    defer allocator.free(line6);
+
+    const frontmost_name = try runAppleScriptExpectString(allocator, &.{ line1, line2, line3, line4, line5, line6 });
+    defer allocator.free(frontmost_name);
+    if (!std.mem.eql(u8, std.mem.trim(u8, frontmost_name, " \t\r\n"), app_name)) {
+        return error.ActionVerificationFailed;
+    }
 }
 
 fn focusWindow(allocator: std.mem.Allocator, app_name: []const u8, window_title: []const u8) !void {
@@ -346,11 +408,14 @@ fn clickFrontButton(allocator: std.mem.Allocator, button_title: []const u8) !voi
 }
 
 fn typeText(allocator: std.mem.Allocator, text: []const u8) !void {
-    const escaped = try appleScriptEscape(allocator, text);
-    defer allocator.free(escaped);
-    const line = try std.fmt.allocPrint(allocator, "tell application \"System Events\" to keystroke \"{s}\"", .{escaped});
-    defer allocator.free(line);
-    try runAppleScriptExpectOk(allocator, &.{line});
+    const script = try buildTypeTextScript(allocator, text);
+    defer allocator.free(script);
+
+    const applied_value = try runAppleScriptExpectString(allocator, &.{script});
+    defer allocator.free(applied_value);
+    if (!std.mem.eql(u8, std.mem.trim(u8, applied_value, " \t\r\n"), text)) {
+        return error.ActionVerificationFailed;
+    }
 }
 
 fn sendKeyCombo(allocator: std.mem.Allocator, key: []const u8, modifiers: []const []u8) !void {
@@ -383,6 +448,13 @@ fn runAppleScriptExpectOk(allocator: std.mem.Allocator, lines: []const []const u
     var result = try runAppleScript(allocator, lines);
     defer result.deinit(allocator);
     if (result.exit_code != 0) return error.CommandFailed;
+}
+
+fn runAppleScriptExpectString(allocator: std.mem.Allocator, lines: []const []const u8) ![]u8 {
+    var result = try runAppleScript(allocator, lines);
+    defer result.deinit(allocator);
+    if (result.exit_code != 0) return error.CommandFailed;
+    return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n"));
 }
 
 fn runAppleScript(allocator: std.mem.Allocator, lines: []const []const u8) !CommandResult {
@@ -526,6 +598,51 @@ fn appleScriptEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+fn buildTypeTextScript(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    const escaped = try appleScriptEscape(allocator, text);
+    defer allocator.free(escaped);
+    return std.fmt.allocPrint(
+        allocator,
+        "tell application \"System Events\"\n" ++
+            "set targetProc to first application process whose frontmost is true\n" ++
+            "if (count of windows of targetProc) is 0 then error number -1728\n" ++
+            "if (count of text fields of first window of targetProc) is 0 then error number -1728\n" ++
+            "set targetField to first text field of first window of targetProc\n" ++
+            "try\n" ++
+            "set focused of targetField to true\n" ++
+            "end try\n" ++
+            "try\n" ++
+            "click targetField\n" ++
+            "end try\n" ++
+            "delay 0.1\n" ++
+            "try\n" ++
+            "set value of targetField to \"{s}\"\n" ++
+            "delay 0.1\n" ++
+            "set fieldValue to value of targetField as text\n" ++
+            "on error\n" ++
+            "set fieldValue to \"\"\n" ++
+            "end try\n" ++
+            "if fieldValue is not \"{s}\" then\n" ++
+            "try\n" ++
+            "keystroke \"a\" using command down\n" ++
+            "delay 0.05\n" ++
+            "key code 51\n" ++
+            "delay 0.05\n" ++
+            "end try\n" ++
+            "keystroke \"{s}\"\n" ++
+            "delay 0.1\n" ++
+            "try\n" ++
+            "set fieldValue to value of targetField as text\n" ++
+            "on error\n" ++
+            "set fieldValue to \"\"\n" ++
+            "end try\n" ++
+            "end if\n" ++
+            "return fieldValue\n" ++
+            "end tell",
+        .{ escaped, escaped, escaped },
+    );
+}
+
 fn isSupportedModifier(modifier: []const u8) bool {
     return std.mem.eql(u8, modifier, "command") or
         std.mem.eql(u8, modifier, "option") or
@@ -598,4 +715,37 @@ test "computer_driver: parse observe payload honors include_screenshot" {
     defer parsed.deinit();
     const args = try parseObserveArgs(std.testing.allocator, parsed.value.object);
     try std.testing.expect(!args.include_screenshot);
+}
+
+test "computer_driver: status and health report readiness guidance" {
+    const allocator = std.testing.allocator;
+
+    const degraded_status = try renderComputerStatusJson(allocator, .{
+        .accessibility = false,
+        .screen_capture_checked = true,
+        .screen_capture = false,
+    });
+    defer allocator.free(degraded_status);
+    try std.testing.expect(std.mem.indexOf(u8, degraded_status, "\"readiness_state\":\"accessibility_required\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, degraded_status, "\"guidance\":\"Enable Accessibility") != null);
+
+    const ready_health = try renderComputerHealthJson(allocator, .{
+        .accessibility = true,
+        .screen_capture_checked = false,
+        .screen_capture = false,
+    });
+    defer allocator.free(ready_health);
+    try std.testing.expect(std.mem.indexOf(u8, ready_health, "\"state\":\"online\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ready_health, "\"screenshot_ready\":false") != null);
+}
+
+test "computer_driver: type text script prefers direct text field set" {
+    const allocator = std.testing.allocator;
+    const script = try buildTypeTextScript(allocator, "Hello from hardening");
+    defer allocator.free(script);
+
+    try std.testing.expect(std.mem.indexOf(u8, script, "set targetField to first text field of first window of targetProc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "set value of targetField to \"Hello from hardening\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "click targetField") != null);
+    try std.testing.expect(std.mem.count(u8, script, "keystroke \"Hello from hardening\"") == 1);
 }
