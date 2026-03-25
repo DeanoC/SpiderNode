@@ -329,9 +329,15 @@ fn collectObservationJson(allocator: std.mem.Allocator) ![]u8 {
 fn activateApp(allocator: std.mem.Allocator, app_name: []const u8) !void {
     const escaped = try appleScriptEscape(allocator, app_name);
     defer allocator.free(escaped);
-    const line = try std.fmt.allocPrint(allocator, "tell application \"{s}\" to activate", .{escaped});
-    defer allocator.free(line);
-    try runAppleScriptExpectOk(allocator, &.{line});
+    const line1 = try allocator.dupe(u8, "tell application \"System Events\"");
+    defer allocator.free(line1);
+    const line2 = try std.fmt.allocPrint(allocator, "set targetProc to first application process whose name is \"{s}\"", .{escaped});
+    defer allocator.free(line2);
+    const line3 = try allocator.dupe(u8, "set frontmost of targetProc to true");
+    defer allocator.free(line3);
+    const line4 = try allocator.dupe(u8, "end tell");
+    defer allocator.free(line4);
+    try runAppleScriptExpectOk(allocator, &.{ line1, line2, line3, line4 });
 }
 
 fn focusWindow(allocator: std.mem.Allocator, app_name: []const u8, window_title: []const u8) !void {
@@ -394,7 +400,21 @@ fn typeText(allocator: std.mem.Allocator, text: []const u8) !void {
             "set targetProc to first application process whose frontmost is true\n" ++
             "try\n" ++
             "if (count of text fields of first window of targetProc) > 0 then\n" ++
-            "set value of first text field of first window of targetProc to \"{s}\"\n" ++
+            "set targetField to first text field of first window of targetProc\n" ++
+            "try\n" ++
+            "set focused of targetField to true\n" ++
+            "end try\n" ++
+            "try\n" ++
+            "click targetField\n" ++
+            "end try\n" ++
+            "delay 0.1\n" ++
+            "try\n" ++
+            "keystroke \"a\" using command down\n" ++
+            "delay 0.05\n" ++
+            "key code 51\n" ++
+            "delay 0.05\n" ++
+            "end try\n" ++
+            "keystroke \"{s}\"\n" ++
             "else\n" ++
             "keystroke \"{s}\"\n" ++
             "end if\n" ++
@@ -688,7 +708,21 @@ test "computer_driver: type text script prefers direct text field set" {
             "set targetProc to first application process whose frontmost is true\n" ++
             "try\n" ++
             "if (count of text fields of first window of targetProc) > 0 then\n" ++
-            "set value of first text field of first window of targetProc to \"{s}\"\n" ++
+            "set targetField to first text field of first window of targetProc\n" ++
+            "try\n" ++
+            "set focused of targetField to true\n" ++
+            "end try\n" ++
+            "try\n" ++
+            "click targetField\n" ++
+            "end try\n" ++
+            "delay 0.1\n" ++
+            "try\n" ++
+            "keystroke \"a\" using command down\n" ++
+            "delay 0.05\n" ++
+            "key code 51\n" ++
+            "delay 0.05\n" ++
+            "end try\n" ++
+            "keystroke \"{s}\"\n" ++
             "else\n" ++
             "keystroke \"{s}\"\n" ++
             "end if\n" ++
@@ -700,6 +734,7 @@ test "computer_driver: type text script prefers direct text field set" {
     );
     defer allocator.free(script);
 
-    try std.testing.expect(std.mem.indexOf(u8, script, "set value of first text field of first window of targetProc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "set targetField to first text field of first window of targetProc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "click targetField") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "keystroke \"Hello from hardening\"") != null);
 }
