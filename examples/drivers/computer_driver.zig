@@ -388,9 +388,24 @@ fn clickFrontButton(allocator: std.mem.Allocator, button_title: []const u8) !voi
 fn typeText(allocator: std.mem.Allocator, text: []const u8) !void {
     const escaped = try appleScriptEscape(allocator, text);
     defer allocator.free(escaped);
-    const line = try std.fmt.allocPrint(allocator, "tell application \"System Events\" to keystroke \"{s}\"", .{escaped});
-    defer allocator.free(line);
-    try runAppleScriptExpectOk(allocator, &.{line});
+    const script = try std.fmt.allocPrint(
+        allocator,
+        "tell application \"System Events\"\n" ++
+            "set targetProc to first application process whose frontmost is true\n" ++
+            "try\n" ++
+            "if (count of text fields of first window of targetProc) > 0 then\n" ++
+            "set value of first text field of first window of targetProc to \"{s}\"\n" ++
+            "else\n" ++
+            "keystroke \"{s}\"\n" ++
+            "end if\n" ++
+            "on error\n" ++
+            "keystroke \"{s}\"\n" ++
+            "end try\n" ++
+            "end tell",
+        .{ escaped, escaped, escaped },
+    );
+    defer allocator.free(script);
+    try runAppleScriptExpectOk(allocator, &.{script});
 }
 
 fn sendKeyCombo(allocator: std.mem.Allocator, key: []const u8, modifiers: []const []u8) !void {
@@ -660,4 +675,31 @@ test "computer_driver: status and health report readiness guidance" {
     defer allocator.free(ready_health);
     try std.testing.expect(std.mem.indexOf(u8, ready_health, "\"state\":\"online\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, ready_health, "\"screenshot_ready\":false") != null);
+}
+
+test "computer_driver: type text script prefers direct text field set" {
+    const allocator = std.testing.allocator;
+
+    const escaped = try appleScriptEscape(allocator, "Hello from hardening");
+    defer allocator.free(escaped);
+    const script = try std.fmt.allocPrint(
+        allocator,
+        "tell application \"System Events\"\n" ++
+            "set targetProc to first application process whose frontmost is true\n" ++
+            "try\n" ++
+            "if (count of text fields of first window of targetProc) > 0 then\n" ++
+            "set value of first text field of first window of targetProc to \"{s}\"\n" ++
+            "else\n" ++
+            "keystroke \"{s}\"\n" ++
+            "end if\n" ++
+            "on error\n" ++
+            "keystroke \"{s}\"\n" ++
+            "end try\n" ++
+            "end tell",
+        .{ escaped, escaped, escaped },
+    );
+    defer allocator.free(script);
+
+    try std.testing.expect(std.mem.indexOf(u8, script, "set value of first text field of first window of targetProc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "keystroke \"Hello from hardening\"") != null);
 }
