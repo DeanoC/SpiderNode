@@ -1,0 +1,64 @@
+{
+  "enabled": true,
+  "venom_id": "mcp-fetch",
+  "kind": "mcp",
+  "version": "1",
+  "state": "online",
+  "endpoints": [
+    "/nodes/{node_id}/venoms/mcp-fetch"
+  ],
+  "capabilities": {
+    "invoke": true,
+    "operations": ["tools/call", "tools/list"],
+    "mcp_transport": "stdio"
+  },
+  "mounts": [
+    {
+      "mount_id": "mcp-fetch",
+      "mount_path": "/nodes/{node_id}/venoms/mcp-fetch",
+      "state": "online"
+    }
+  ],
+  "ops": {
+    "model": "namespace",
+    "style": "plan9",
+    "invoke": "control/invoke.json"
+  },
+  "runtime": {
+    "type": "native_proc",
+    "abi": "namespace-driver-v1",
+    "executable_path": "./zig-out/bin/spiderweb-mcp-bridge",
+    "args": ["--", "npx", "-y", "@modelcontextprotocol/server-fetch"],
+    "timeout_ms": 30000
+  },
+  "permissions": {
+    "default": "deny-by-default",
+    "allow_roles": ["admin", "user"]
+  },
+  "schema": {
+    "model": "namespace-service-v1",
+    "input": {
+      "type": "object",
+      "required": ["tool"],
+      "properties": {
+        "op": {
+          "type": "string",
+          "description": "Operation: tools/call (default), tools/list"
+        },
+        "tool": {
+          "type": "string",
+          "description": "MCP tool name to invoke (e.g. 'fetch')"
+        },
+        "arguments": {
+          "type": "object",
+          "description": "Tool arguments as a JSON object"
+        }
+      }
+    }
+  },
+  "invoke_template": {
+    "tool": "fetch",
+    "arguments": { "url": "https://example.com", "max_length": 5000 }
+  },
+  "help_md": "MCP fetch server bridge. Fetches web content via the Model Context Protocol.\n\nOperations:\n- tools/call: Call an MCP tool (default). Requires 'tool' and optional 'arguments'.\n- tools/list: List available MCP tools."
+}

@@ -1,0 +1,78 @@
+{
+  "enabled": true,
+  "venom_id": "mcp-filesystem",
+  "kind": "mcp",
+  "version": "1",
+  "state": "online",
+  "endpoints": [
+    "/nodes/{node_id}/venoms/mcp-filesystem"
+  ],
+  "capabilities": {
+    "invoke": true,
+    "operations": ["tools/call", "tools/list", "resources/read", "resources/list"],
+    "mcp_transport": "stdio"
+  },
+  "mounts": [
+    {
+      "mount_id": "mcp-filesystem",
+      "mount_path": "/nodes/{node_id}/venoms/mcp-filesystem",
+      "state": "online"
+    }
+  ],
+  "ops": {
+    "model": "namespace",
+    "style": "plan9",
+    "invoke": "control/invoke.json"
+  },
+  "runtime": {
+    "type": "native_proc",
+    "abi": "namespace-driver-v1",
+    "executable_path": "./zig-out/bin/spiderweb-mcp-bridge",
+    "args": ["--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp/safe-dir"],
+    "timeout_ms": 30000
+  },
+  "permissions": {
+    "default": "deny-by-default",
+    "allow_roles": ["admin", "user"]
+  },
+  "schema": {
+    "model": "namespace-service-v1",
+    "input": {
+      "type": "object",
+      "required": ["tool"],
+      "properties": {
+        "op": {
+          "type": "string",
+          "description": "Operation: tools/call (default), tools/list, resources/read, resources/list"
+        },
+        "tool": {
+          "type": "string",
+          "description": "MCP tool name to invoke"
+        },
+        "arguments": {
+          "type": "object",
+          "description": "Tool arguments as a JSON object"
+        },
+        "uri": {
+          "type": "string",
+          "description": "Resource URI (for resources/read operation)"
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "operation": { "type": "string" },
+        "tool": { "type": "string" },
+        "result": { "type": "object" },
+        "error": { "type": "object" }
+      }
+    }
+  },
+  "invoke_template": {
+    "tool": "read_file",
+    "arguments": { "path": "/tmp/safe-dir/example.txt" }
+  },
+  "help_md": "MCP filesystem server bridge. Provides file read/write/search via the Model Context Protocol.\n\nOperations:\n- tools/call: Call an MCP tool (default). Requires 'tool' and optional 'arguments'.\n- tools/list: List available MCP tools.\n- resources/list: List available MCP resources.\n- resources/read: Read a resource by URI."
+}
