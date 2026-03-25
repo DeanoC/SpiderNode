@@ -185,13 +185,20 @@ fn performAct(allocator: std.mem.Allocator, args: *ActArgs) ![]u8 {
         );
     }
 
-    switch (args.action) {
-        .activate => try activateApp(allocator, args.app_name.?),
-        .focus_window => try focusWindow(allocator, args.app_name.?, args.window_title.?),
-        .primary_tap => try clickFrontButton(allocator, args.button_title.?),
-        .text_input => try typeText(allocator, args.text.?),
-        .key_combo => try sendKeyCombo(allocator, args.key.?, args.modifiers.items),
-    }
+    const action_attempt = switch (args.action) {
+        .activate => activateApp(allocator, args.app_name.?),
+        .focus_window => focusWindow(allocator, args.app_name.?, args.window_title.?),
+        .primary_tap => clickFrontButton(allocator, args.button_title.?),
+        .text_input => typeText(allocator, args.text.?),
+        .key_combo => sendKeyCombo(allocator, args.key.?, args.modifiers.items),
+    };
+    _ = action_attempt catch |err| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"act\",\"action_result\":{{\"ok\":false,\"action\":\"{s}\",\"reason\":\"action_failed\",\"detail\":\"{s}\"}},\"status\":{s},\"health\":{s}}}",
+            .{ capability.computer_venom_id, @tagName(args.action), @errorName(err), status_json, health_json },
+        );
+    };
 
     return std.fmt.allocPrint(
         allocator,
@@ -335,9 +342,18 @@ fn activateApp(allocator: std.mem.Allocator, app_name: []const u8) !void {
     defer allocator.free(line2);
     const line3 = try allocator.dupe(u8, "set frontmost of targetProc to true");
     defer allocator.free(line3);
-    const line4 = try allocator.dupe(u8, "end tell");
+    const line4 = try allocator.dupe(u8, "delay 0.2");
     defer allocator.free(line4);
-    try runAppleScriptExpectOk(allocator, &.{ line1, line2, line3, line4 });
+    const line5 = try allocator.dupe(u8, "return name of first application process whose frontmost is true");
+    defer allocator.free(line5);
+    const line6 = try allocator.dupe(u8, "end tell");
+    defer allocator.free(line6);
+
+    const frontmost_name = try runAppleScriptExpectString(allocator, &.{ line1, line2, line3, line4, line5, line6 });
+    defer allocator.free(frontmost_name);
+    if (!std.mem.eql(u8, std.mem.trim(u8, frontmost_name, " \t\r\n"), app_name)) {
+        return error.ActionVerificationFailed;
+    }
 }
 
 fn focusWindow(allocator: std.mem.Allocator, app_name: []const u8, window_title: []const u8) !void {
@@ -392,36 +408,14 @@ fn clickFrontButton(allocator: std.mem.Allocator, button_title: []const u8) !voi
 }
 
 fn typeText(allocator: std.mem.Allocator, text: []const u8) !void {
-    const escaped = try appleScriptEscape(allocator, text);
-    defer allocator.free(escaped);
-    const script = try std.fmt.allocPrint(
-        allocator,
-        "tell application \"System Events\"\n" ++
-            "set targetProc to first application process whose frontmost is true\n" ++
-            "try\n" ++
-            "if (count of text fields of first window of targetProc) > 0 then\n" ++
-            "set targetField to first text field of first window of targetProc\n" ++
-            "try\n" ++
-            "set focused of targetField to true\n" ++
-            "end try\n" ++
-            "try\n" ++
-            "click targetField\n" ++
-            "end try\n" ++
-            "delay 0.1\n" ++
-            "try\n" ++
-            "keystroke \"a\" using command down\n" ++
-            "delay 0.05\n" ++
-            "key code 51\n" ++
-            "delay 0.05\n" ++
-            "end try\n" ++
-            "end if\n" ++
-            "end try\n" ++
-            "keystroke \"{s}\"\n" ++
-            "end tell",
-        .{ escaped },
-    );
+    const script = try buildTypeTextScript(allocator, text);
     defer allocator.free(script);
-    try runAppleScriptExpectOk(allocator, &.{script});
+
+    const applied_value = try runAppleScriptExpectString(allocator, &.{script});
+    defer allocator.free(applied_value);
+    if (!std.mem.eql(u8, std.mem.trim(u8, applied_value, " \t\r\n"), text)) {
+        return error.ActionVerificationFailed;
+    }
 }
 
 fn sendKeyCombo(allocator: std.mem.Allocator, key: []const u8, modifiers: []const []u8) !void {
@@ -454,6 +448,13 @@ fn runAppleScriptExpectOk(allocator: std.mem.Allocator, lines: []const []const u
     var result = try runAppleScript(allocator, lines);
     defer result.deinit(allocator);
     if (result.exit_code != 0) return error.CommandFailed;
+}
+
+fn runAppleScriptExpectString(allocator: std.mem.Allocator, lines: []const []const u8) ![]u8 {
+    var result = try runAppleScript(allocator, lines);
+    defer result.deinit(allocator);
+    if (result.exit_code != 0) return error.CommandFailed;
+    return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n"));
 }
 
 fn runAppleScript(allocator: std.mem.Allocator, lines: []const []const u8) !CommandResult {
@@ -597,6 +598,51 @@ fn appleScriptEscape(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+fn buildTypeTextScript(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    const escaped = try appleScriptEscape(allocator, text);
+    defer allocator.free(escaped);
+    return std.fmt.allocPrint(
+        allocator,
+        "tell application \"System Events\"\n" ++
+            "set targetProc to first application process whose frontmost is true\n" ++
+            "if (count of windows of targetProc) is 0 then error number -1728\n" ++
+            "if (count of text fields of first window of targetProc) is 0 then error number -1728\n" ++
+            "set targetField to first text field of first window of targetProc\n" ++
+            "try\n" ++
+            "set focused of targetField to true\n" ++
+            "end try\n" ++
+            "try\n" ++
+            "click targetField\n" ++
+            "end try\n" ++
+            "delay 0.1\n" ++
+            "try\n" ++
+            "set value of targetField to \"{s}\"\n" ++
+            "delay 0.1\n" ++
+            "set fieldValue to value of targetField as text\n" ++
+            "on error\n" ++
+            "set fieldValue to \"\"\n" ++
+            "end try\n" ++
+            "if fieldValue is not \"{s}\" then\n" ++
+            "try\n" ++
+            "keystroke \"a\" using command down\n" ++
+            "delay 0.05\n" ++
+            "key code 51\n" ++
+            "delay 0.05\n" ++
+            "end try\n" ++
+            "keystroke \"{s}\"\n" ++
+            "delay 0.1\n" ++
+            "try\n" ++
+            "set fieldValue to value of targetField as text\n" ++
+            "on error\n" ++
+            "set fieldValue to \"\"\n" ++
+            "end try\n" ++
+            "end if\n" ++
+            "return fieldValue\n" ++
+            "end tell",
+        .{ escaped, escaped, escaped },
+    );
+}
+
 fn isSupportedModifier(modifier: []const u8) bool {
     return std.mem.eql(u8, modifier, "command") or
         std.mem.eql(u8, modifier, "option") or
@@ -695,38 +741,11 @@ test "computer_driver: status and health report readiness guidance" {
 
 test "computer_driver: type text script prefers direct text field set" {
     const allocator = std.testing.allocator;
-
-    const escaped = try appleScriptEscape(allocator, "Hello from hardening");
-    defer allocator.free(escaped);
-    const script = try std.fmt.allocPrint(
-        allocator,
-        "tell application \"System Events\"\n" ++
-            "set targetProc to first application process whose frontmost is true\n" ++
-            "try\n" ++
-            "if (count of text fields of first window of targetProc) > 0 then\n" ++
-            "set targetField to first text field of first window of targetProc\n" ++
-            "try\n" ++
-            "set focused of targetField to true\n" ++
-            "end try\n" ++
-            "try\n" ++
-            "click targetField\n" ++
-            "end try\n" ++
-            "delay 0.1\n" ++
-            "try\n" ++
-            "keystroke \"a\" using command down\n" ++
-            "delay 0.05\n" ++
-            "key code 51\n" ++
-            "delay 0.05\n" ++
-            "end try\n" ++
-            "end if\n" ++
-            "end try\n" ++
-            "keystroke \"{s}\"\n" ++
-            "end tell",
-        .{ escaped },
-    );
+    const script = try buildTypeTextScript(allocator, "Hello from hardening");
     defer allocator.free(script);
 
     try std.testing.expect(std.mem.indexOf(u8, script, "set targetField to first text field of first window of targetProc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "set value of targetField to \"Hello from hardening\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "click targetField") != null);
     try std.testing.expect(std.mem.count(u8, script, "keystroke \"Hello from hardening\"") == 1);
 }
