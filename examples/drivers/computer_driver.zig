@@ -67,6 +67,368 @@ const PermissionState = struct {
     screen_capture: bool = false,
 };
 
+const linux_helper_source =
+    \\import json
+    \\import os
+    \\import sys
+    \\
+    \\try:
+    \\    import pyatspi
+    \\except Exception as exc:
+    \\    response = {
+    \\        "ok": True,
+    \\        "venom_id": "computer-main",
+    \\        "op": "observe",
+    \\        "observation": {
+    \\            "focused_window": None,
+    \\            "windows": [],
+    \\            "ui_tree": None,
+    \\            "permission_state": {
+    \\                "accessibility": False,
+    \\                "screen_capture": False
+    \\            }
+    \\        },
+    \\        "status": {
+    \\            "state": "degraded",
+    \\            "readiness_state": "accessibility_required",
+    \\            "observe_ready": False,
+    \\            "act_ready": False,
+    \\            "screenshot_ready": False,
+    \\            "permissions": {
+    \\                "accessibility": {
+    \\                    "granted": False,
+    \\                    "required": True,
+    \\                    "guidance": "Install python3-pyatspi and run the Linux node inside an AT-SPI-enabled desktop session."
+    \\                },
+    \\                "screen_capture": {
+    \\                    "granted": False,
+    \\                    "checked": False,
+    \\                    "required": False,
+    \\                    "guidance": "Linux screenshot artifacts are optional in this first capability lane."
+    \\                }
+    \\            },
+    \\            "detail": str(exc)
+    \\        },
+    \\        "health": {
+    \\            "state": "degraded",
+    \\            "platform": "linux",
+    \\            "readiness_state": "accessibility_required",
+    \\            "observe_ready": False,
+    \\            "act_ready": False,
+    \\            "screenshot_ready": False,
+    \\            "permissions": {
+    \\                "accessibility": {
+    \\                    "granted": False,
+    \\                    "required": True,
+    \\                    "guidance": "Install python3-pyatspi and run the Linux node inside an AT-SPI-enabled desktop session."
+    \\                },
+    \\                "screen_capture": {
+    \\                    "granted": False,
+    \\                    "checked": False,
+    \\                    "required": False,
+    \\                    "guidance": "Linux screenshot artifacts are optional in this first capability lane."
+    \\                }
+    \\            }
+    \\        },
+    \\        "artifact_updates": [
+    \\            {
+    \\                "path": "artifacts/last_observation.json",
+    \\                "content": json.dumps({
+    \\                    "focused_window": None,
+    \\                    "windows": [],
+    \\                    "ui_tree": None,
+    \\                    "permission_state": {
+    \\                        "accessibility": False,
+    \\                        "screen_capture": False
+    \\                    }
+    \\                })
+    \\            }
+    \\        ]
+    \\    }
+    \\    print(json.dumps(response))
+    \\    sys.exit(0)
+    \\
+    \\REQUEST = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+    \\FIXTURE_APP = os.environ.get("SPIDER_FIXTURE_APP_NAME", "SpiderLinuxComputerFixture")
+    \\FIXTURE_WINDOW = os.environ.get("SPIDER_FIXTURE_WINDOW_TITLE", "Spider Linux Computer Fixture")
+    \\
+    \\WINDOW_ROLES = {"frame", "window", "dialog", "application"}
+    \\TEXT_ROLES = {"text", "entry", "text field", "password text"}
+    \\BUTTON_ROLES = {"push button", "button"}
+    \\
+    \\def children(acc):
+    \\    try:
+    \\        count = acc.childCount
+    \\    except Exception:
+    \\        count = 0
+    \\    for idx in range(count):
+    \\        try:
+    \\            child = acc[idx]
+    \\        except Exception:
+    \\            continue
+    \\        if child is not None:
+    \\            yield child
+    \\
+    \\def walk(acc):
+    \\    yield acc
+    \\    for child in children(acc):
+    \\        for nested in walk(child):
+    \\            yield nested
+    \\
+    \\def role_name(acc):
+    \\    try:
+    \\        return (acc.getRoleName() or "").lower()
+    \\    except Exception:
+    \\        return ""
+    \\
+    \\def state_flags(acc):
+    \\    try:
+    \\        state = acc.getState()
+    \\        return {
+    \\            "active": state.contains(pyatspi.STATE_ACTIVE),
+    \\            "focused": state.contains(pyatspi.STATE_FOCUSED),
+    \\            "enabled": state.contains(pyatspi.STATE_SENSITIVE) or state.contains(pyatspi.STATE_ENABLED),
+    \\        }
+    \\    except Exception:
+    \\        return {"active": False, "focused": False, "enabled": True}
+    \\
+    \\def text_value(acc):
+    \\    try:
+    \\        return acc.queryText().getText(0, -1)
+    \\    except Exception:
+    \\        return None
+    \\
+    \\def canonical_role(acc):
+    \\    role = role_name(acc)
+    \\    if role in WINDOW_ROLES:
+    \\        return "window"
+    \\    if role in TEXT_ROLES:
+    \\        return "text_field"
+    \\    if role in BUTTON_ROLES:
+    \\        return "button"
+    \\    if role == "label":
+    \\        return "label"
+    \\    return role.replace(" ", "_") or "node"
+    \\
+    \\def render_tree(acc, depth=0, max_depth=3):
+    \\    node = {
+    \\        "role": canonical_role(acc),
+    \\        "name": getattr(acc, "name", "") or "",
+    \\        "children": []
+    \\    }
+    \\    value = text_value(acc)
+    \\    if value not in (None, ""):
+    \\        node["value"] = value
+    \\    if depth >= max_depth:
+    \\        return node
+    \\    for child in children(acc):
+    \\        child_node = render_tree(child, depth + 1, max_depth)
+    \\        if child_node["role"] != "node" or child_node.get("name") or child_node.get("value") or child_node["children"]:
+    \\            node["children"].append(child_node)
+    \\    return node
+    \\
+    \\def find_fixture_window(app_name=None, window_title=None):
+    \\    desktop = pyatspi.Registry.getDesktop(0)
+    \\    fallback = None
+    \\    for app in desktop:
+    \\        current_app_name = getattr(app, "name", "") or ""
+    \\        if app_name and current_app_name != app_name:
+    \\            app_matches = False
+    \\        else:
+    \\            app_matches = True
+    \\        for child in children(app):
+    \\            if role_name(child) not in WINDOW_ROLES:
+    \\                continue
+    \\            current_title = getattr(child, "name", "") or ""
+    \\            if window_title and window_title not in current_title:
+    \\                continue
+    \\            if app_matches:
+    \\                return app, child
+    \\            if fallback is None:
+    \\                fallback = (app, child)
+    \\    if fallback is not None:
+    \\        return fallback
+    \\    return None, None
+    \\
+    \\def collect_windows():
+    \\    result = []
+    \\    desktop = pyatspi.Registry.getDesktop(0)
+    \\    for app in desktop:
+    \\        app_name = getattr(app, "name", "") or ""
+    \\        for child in children(app):
+    \\            if role_name(child) not in WINDOW_ROLES:
+    \\                continue
+    \\            result.append({
+    \\                "app_name": app_name,
+    \\                "window_title": getattr(child, "name", "") or "",
+    \\                "states": state_flags(child),
+    \\            })
+    \\    return result
+    \\
+    \\def do_named_action(acc, preferred):
+    \\    try:
+    \\        actions = acc.queryAction()
+    \\    except Exception:
+    \\        return False
+    \\    for idx in range(actions.nActions):
+    \\        try:
+    \\            name = (actions.getName(idx) or "").lower()
+    \\        except Exception:
+    \\            continue
+    \\        if name in preferred:
+    \\            try:
+    \\                return bool(actions.doAction(idx))
+    \\            except Exception:
+    \\                return False
+    \\    return False
+    \\
+    \\def find_first(window, role_set, match_name=None):
+    \\    for node in walk(window):
+    \\        if role_name(node) not in role_set:
+    \\            continue
+    \\        current_name = getattr(node, "name", "") or ""
+    \\        if match_name and current_name != match_name:
+    \\            continue
+    \\        return node
+    \\    return None
+    \\
+    \\def set_text(acc, value):
+    \\    try:
+    \\        editable = acc.queryEditableText()
+    \\        editable.setTextContents(value)
+    \\        return True
+    \\    except Exception:
+    \\        return False
+    \\
+    \\def collect_observation():
+    \\    app, window = find_fixture_window(FIXTURE_APP, FIXTURE_WINDOW)
+    \\    windows = collect_windows()
+    \\    focused = None
+    \\    for item in windows:
+    \\        if item["states"].get("active") or item["states"].get("focused"):
+    \\            focused = {
+    \\                "app_name": item["app_name"],
+    \\                "window_title": item["window_title"]
+    \\            }
+    \\            break
+    \\    if focused is None and app is not None and window is not None:
+    \\        focused = {
+    \\            "app_name": getattr(app, "name", "") or "",
+    \\            "window_title": getattr(window, "name", "") or "",
+    \\        }
+    \\    return {
+    \\        "focused_window": focused,
+    \\        "windows": windows,
+    \\        "ui_tree": render_tree(window) if window is not None else None,
+    \\        "permission_state": {
+    \\            "accessibility": True,
+    \\            "screen_capture": False
+    \\        }
+    \\    }
+    \\
+    \\def status_payload():
+    \\    return {
+    \\        "state": "ok",
+    \\        "device": "computer",
+    \\        "readiness_state": "ready",
+    \\        "observe_ready": True,
+    \\        "act_ready": True,
+    \\        "screenshot_ready": False,
+    \\        "permissions": {
+    \\            "accessibility": {
+    \\                "granted": True,
+    \\                "required": True,
+    \\                "guidance": "Linux computer automation requires an AT-SPI-enabled desktop session."
+    \\            },
+    \\            "screen_capture": {
+    \\                "granted": False,
+    \\                "checked": False,
+    \\                "required": False,
+    \\                "guidance": "Linux screenshot artifacts are optional in this first capability lane."
+    \\            }
+    \\        }
+    \\    }
+    \\
+    \\def health_payload():
+    \\    health = status_payload()
+    \\    health["state"] = "online"
+    \\    health["platform"] = "linux"
+    \\    return health
+    \\
+    \\def observe_response():
+    \\    observation = collect_observation()
+    \\    return {
+    \\        "ok": True,
+    \\        "venom_id": "computer-main",
+    \\        "op": "observe",
+    \\        "observation": observation,
+    \\        "artifact_paths": {
+    \\            "observation": "artifacts/last_observation.json",
+    \\            "screenshot": None
+    \\        },
+    \\        "status": status_payload(),
+    \\        "health": health_payload(),
+    \\        "artifact_updates": [
+    \\            {
+    \\                "path": "artifacts/last_observation.json",
+    \\                "content": json.dumps(observation)
+    \\            }
+    \\        ]
+    \\    }
+    \\
+    \\def act_response(action_result):
+    \\    return {
+    \\        "ok": True,
+    \\        "venom_id": "computer-main",
+    \\        "op": "act",
+    \\        "action_result": action_result,
+    \\        "observation": collect_observation(),
+    \\        "status": status_payload(),
+    \\        "health": health_payload()
+    \\    }
+    \\
+    \\args = REQUEST.get("arguments") or {}
+    \\op = REQUEST.get("op")
+    \\if op == "observe":
+    \\    print(json.dumps(observe_response()))
+    \\    sys.exit(0)
+    \\if op != "act":
+    \\    print(json.dumps(act_response({"ok": False, "reason": "invalid_op", "action": None})))
+    \\    sys.exit(0)
+    \\
+    \\action = args.get("action")
+    \\app_name = args.get("app_name") or FIXTURE_APP
+    \\window_title = args.get("window_title") or FIXTURE_WINDOW
+    \\app, window = find_fixture_window(app_name, window_title)
+    \\if window is None:
+    \\    print(json.dumps(act_response({"ok": False, "reason": "window_missing", "action": action})))
+    \\    sys.exit(0)
+    \\
+    \\if action == "activate":
+    \\    ok = do_named_action(window, {"activate", "raise", "switch"})
+    \\    print(json.dumps(act_response({"ok": bool(ok), "action": action, "reason": None if ok else "activate_failed"})))
+    \\    sys.exit(0)
+    \\if action == "focus_window":
+    \\    ok = do_named_action(window, {"activate", "raise", "switch"})
+    \\    print(json.dumps(act_response({"ok": bool(ok), "action": action, "reason": None if ok else "focus_failed"})))
+    \\    sys.exit(0)
+    \\if action == "primary_tap":
+    \\    target = find_first(window, BUTTON_ROLES, args.get("button_title"))
+    \\    ok = target is not None and do_named_action(target, {"click", "press", "jump"})
+    \\    print(json.dumps(act_response({"ok": bool(ok), "action": action, "reason": None if ok else "button_missing"})))
+    \\    sys.exit(0)
+    \\if action == "text_input":
+    \\    target = find_first(window, TEXT_ROLES)
+    \\    ok = target is not None and set_text(target, args.get("text") or "")
+    \\    print(json.dumps(act_response({"ok": bool(ok), "action": action, "reason": None if ok else "text_field_missing"})))
+    \\    sys.exit(0)
+    \\if action == "key_combo":
+    \\    print(json.dumps(act_response({"ok": False, "action": action, "reason": "unsupported_action"})))
+    \\    sys.exit(0)
+    \\print(json.dumps(act_response({"ok": False, "action": action, "reason": "unsupported_action"})))
+    \\sys.exit(0)
+;
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -84,6 +446,25 @@ pub fn main() !void {
     if (parsed.value != .object) fatal("invalid_payload: invoke payload must be a JSON object");
 
     const op = getRequiredString(parsed.value.object, "op") orelse fatal("invalid_payload: missing op");
+    if (builtin.os.tag == .linux) {
+        if (std.mem.eql(u8, op, "observe")) {
+            _ = try parseObserveArgs(allocator, parsed.value.object);
+            const rendered = try runLinuxHelper(allocator, trimmed);
+            defer allocator.free(rendered);
+            try std.fs.File.stdout().writeAll(rendered);
+            return;
+        }
+        if (std.mem.eql(u8, op, "act")) {
+            var args = try parseActArgs(allocator, parsed.value.object);
+            defer args.deinit(allocator);
+            const rendered = try runLinuxHelper(allocator, trimmed);
+            defer allocator.free(rendered);
+            try std.fs.File.stdout().writeAll(rendered);
+            return;
+        }
+        fatal("invalid_payload: unsupported op");
+    }
+
     if (builtin.os.tag != .macos) {
         const rendered = try std.fmt.allocPrint(
             allocator,
@@ -492,6 +873,24 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !CommandRe
     };
 }
 
+fn runLinuxHelper(allocator: std.mem.Allocator, request_json: []const u8) ![]u8 {
+    const timestamp = std.time.milliTimestamp();
+    const helper_path = try std.fmt.allocPrint(allocator, "/tmp/spiderweb-computer-linux-{d}.py", .{timestamp});
+    defer allocator.free(helper_path);
+    const request_path = try std.fmt.allocPrint(allocator, "/tmp/spiderweb-computer-linux-{d}.json", .{timestamp});
+    defer allocator.free(request_path);
+
+    try writeFileAbsoluteCompat(helper_path, linux_helper_source);
+    defer std.fs.deleteFileAbsolute(helper_path) catch {};
+    try writeFileAbsoluteCompat(request_path, request_json);
+    defer std.fs.deleteFileAbsolute(request_path) catch {};
+
+    var result = try runCommand(allocator, &.{ "python3", helper_path, request_path });
+    defer result.deinit(allocator);
+    if (result.exit_code != 0) return error.CommandFailed;
+    return allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n"));
+}
+
 fn captureScreenshotBase64(allocator: std.mem.Allocator) !?[]u8 {
     const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/spiderweb-computer-{d}.png", .{std.time.milliTimestamp()});
     defer allocator.free(tmp_path);
@@ -660,6 +1059,12 @@ fn readFileAbsoluteAllocCompat(
     return file.readToEndAlloc(allocator, max_bytes);
 }
 
+fn writeFileAbsoluteCompat(path: []const u8, contents: []const u8) !void {
+    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(contents);
+}
+
 fn uiScriptingAvailable(allocator: std.mem.Allocator) bool {
     if (builtin.os.tag != .macos) return false;
     var result = runAppleScript(allocator, &.{
@@ -748,4 +1153,11 @@ test "computer_driver: type text script prefers direct text field set" {
     try std.testing.expect(std.mem.indexOf(u8, script, "set value of targetField to \"Hello from hardening\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "click targetField") != null);
     try std.testing.expect(std.mem.count(u8, script, "keystroke \"Hello from hardening\"") == 1);
+}
+
+test "computer_driver: linux helper encodes observation and action responses" {
+    try std.testing.expect(std.mem.indexOf(u8, linux_helper_source, "\"venom_id\": \"computer-main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, linux_helper_source, "\"platform\": \"linux\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, linux_helper_source, "\"path\": \"artifacts/last_observation.json\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, linux_helper_source, "python3-pyatspi") != null);
 }

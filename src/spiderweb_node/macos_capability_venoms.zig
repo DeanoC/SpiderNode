@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const computer_package_id = "computer";
 pub const computer_venom_id = "computer-main";
@@ -9,15 +10,6 @@ pub const computer_driver_binary_name = "spiderweb-computer-driver";
 pub const browser_driver_binary_name = "spiderweb-browser-driver";
 pub const browser_state_path_env_var = "SPIDERWEB_BROWSER_STATE_PATH";
 pub const browser_profile_dir_env_var = "SPIDERWEB_BROWSER_PROFILE_DIR";
-
-pub const computer_readme_md =
-    "macOS desktop automation driver.\n" ++
-    "Write JSON payloads to control/invoke.json with op observe or act.\n" ++
-    "Observation artifacts are refreshed under artifacts/.\n";
-pub const browser_readme_md =
-    "macOS browser automation driver.\n" ++
-    "Write JSON payloads to control/invoke.json with op observe or act.\n" ++
-    "Observation artifacts are refreshed under artifacts/.\n";
 
 pub const computer_schema_json =
     "{\"model\":\"computer-observe-act-v1\",\"control\":{\"invoke\":\"control/invoke.json\"},\"result\":\"result.json\",\"status\":\"status.json\",\"health\":\"health.json\",\"artifacts\":{\"observation\":\"artifacts/last_observation.json\",\"screenshot\":\"artifacts/last_screenshot.png\"},\"ops\":{\"observe\":{\"arguments\":{\"include_screenshot\":\"bool (optional)\"}},\"act\":{\"arguments\":{\"action\":\"focus_window|activate|primary_tap|text_input|key_combo\",\"app_name\":\"string (required for activate/focus_window)\",\"window_title\":\"string (required for focus_window)\",\"button_title\":\"string (required for primary_tap)\",\"text\":\"string (required for text_input)\",\"key\":\"string (required for key_combo)\",\"modifiers\":\"string[] (optional for key_combo)\"}}}}";
@@ -33,14 +25,76 @@ const computer_capabilities_json =
     "{\"invoke\":true,\"discoverable\":true,\"observe\":true,\"act\":true,\"operations\":[\"observe\",\"act\"],\"device\":\"desktop\"}";
 const browser_capabilities_json =
     "{\"invoke\":true,\"discoverable\":true,\"observe\":true,\"act\":true,\"operations\":[\"observe\",\"act\"],\"device\":\"browser\"}";
-const computer_categories_json = "[\"desktop\",\"automation\",\"macos\"]";
-const browser_categories_json = "[\"browser\",\"automation\",\"macos\"]";
-const computer_requirements_json =
-    "{\"host_capabilities\":[\"macos_accessibility\",\"screen_capture\"]}";
-const browser_requirements_json =
-    "{\"host_capabilities\":[\"managed_browser\"]}";
-const permissions_json =
-    "{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"workspace\",\"requires_user_consent\":true,\"platform\":\"macos\"}";
+
+pub fn currentPlatformLabel() []const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "macos",
+        .linux => "linux",
+        else => @tagName(builtin.os.tag),
+    };
+}
+
+fn computerReadmeMd() []const u8 {
+    return switch (builtin.os.tag) {
+        .linux =>
+        "Linux desktop automation driver.\n" ++
+            "Write JSON payloads to control/invoke.json with op observe or act.\n" ++
+            "Observation artifacts are refreshed under artifacts/.\n",
+        else =>
+        "macOS desktop automation driver.\n" ++
+            "Write JSON payloads to control/invoke.json with op observe or act.\n" ++
+            "Observation artifacts are refreshed under artifacts/.\n",
+    };
+}
+
+fn browserReadmeMd() []const u8 {
+    return switch (builtin.os.tag) {
+        .linux =>
+        "Linux browser automation driver.\n" ++
+            "Write JSON payloads to control/invoke.json with op observe or act.\n" ++
+            "Observation artifacts are refreshed under artifacts/.\n",
+        else =>
+        "macOS browser automation driver.\n" ++
+            "Write JSON payloads to control/invoke.json with op observe or act.\n" ++
+            "Observation artifacts are refreshed under artifacts/.\n",
+    };
+}
+
+fn computerCategoriesJson() []const u8 {
+    return switch (builtin.os.tag) {
+        .linux => "[\"desktop\",\"automation\",\"linux\"]",
+        else => "[\"desktop\",\"automation\",\"macos\"]",
+    };
+}
+
+fn browserCategoriesJson() []const u8 {
+    return switch (builtin.os.tag) {
+        .linux => "[\"browser\",\"automation\",\"linux\"]",
+        else => "[\"browser\",\"automation\",\"macos\"]",
+    };
+}
+
+fn computerRequirementsJson() []const u8 {
+    return switch (builtin.os.tag) {
+        .linux => "{\"host_capabilities\":[\"linux_atspi\",\"x11_display\"]}",
+        else => "{\"host_capabilities\":[\"macos_accessibility\",\"screen_capture\"]}",
+    };
+}
+
+fn browserRequirementsJson() []const u8 {
+    return switch (builtin.os.tag) {
+        .linux => "{\"host_capabilities\":[\"managed_browser\",\"x11_display\"]}",
+        else => "{\"host_capabilities\":[\"managed_browser\"]}",
+    };
+}
+
+fn renderPermissionsJson(allocator: std.mem.Allocator) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"default\":\"deny-by-default\",\"allow_roles\":[\"admin\",\"user\"],\"scope\":\"workspace\",\"requires_user_consent\":true,\"platform\":\"{s}\"}}",
+        .{currentPlatformLabel()},
+    );
+}
 
 pub fn renderComputerManifestJson(allocator: std.mem.Allocator, executable_path: []const u8) ![]u8 {
     return renderManifestJson(
@@ -49,12 +103,12 @@ pub fn renderComputerManifestJson(allocator: std.mem.Allocator, executable_path:
             .package_id = computer_package_id,
             .venom_id = computer_venom_id,
             .kind = "computer",
-            .categories_json = computer_categories_json,
-            .requirements_json = computer_requirements_json,
+            .categories_json = computerCategoriesJson(),
+            .requirements_json = computerRequirementsJson(),
             .capabilities_json = computer_capabilities_json,
             .schema_json = computer_schema_json,
             .invoke_template_json = computer_invoke_template_json,
-            .help_md = computer_readme_md,
+            .help_md = computerReadmeMd(),
         },
         executable_path,
     );
@@ -80,12 +134,12 @@ pub fn renderBrowserManifestJsonWithRuntimePaths(
             .package_id = browser_package_id,
             .venom_id = browser_venom_id,
             .kind = "browser",
-            .categories_json = browser_categories_json,
-            .requirements_json = browser_requirements_json,
+            .categories_json = browserCategoriesJson(),
+            .requirements_json = browserRequirementsJson(),
             .capabilities_json = browser_capabilities_json,
             .schema_json = browser_schema_json,
             .invoke_template_json = browser_invoke_template_json,
-            .help_md = browser_readme_md,
+            .help_md = browserReadmeMd(),
             .runtime_env_json = if (runtime_paths) |paths|
                 try renderBrowserRuntimeEnvJson(allocator, paths)
             else
@@ -135,6 +189,8 @@ fn renderManifestJson(
     defer allocator.free(escaped_exec);
     const escaped_help = try jsonEscape(allocator, spec.help_md);
     defer allocator.free(escaped_help);
+    const permissions_json = try renderPermissionsJson(allocator);
+    defer allocator.free(permissions_json);
     const runtime_env_fragment = if (spec.runtime_env_json) |json|
         try std.fmt.allocPrint(allocator, ",\"env\":{s}", .{json})
     else
@@ -216,6 +272,7 @@ test "macos capability venoms: render computer and browser manifests" {
     try std.testing.expect(std.mem.indexOf(u8, computer_manifest, "\"runtime_kind\":\"native\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, computer_manifest, "\"binding_scopes\":[\"workspace\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, computer_manifest, "\"executable_path\":\"./spiderweb-computer-driver\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, computer_manifest, currentPlatformLabel()) != null);
 
     const browser_manifest = try renderBrowserManifestJson(allocator, "./spiderweb-browser-driver");
     defer allocator.free(browser_manifest);
@@ -223,6 +280,7 @@ test "macos capability venoms: render computer and browser manifests" {
     try std.testing.expect(std.mem.indexOf(u8, browser_manifest, "\"package_id\":\"browser\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, browser_manifest, "\"kind\":\"browser\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, browser_manifest, "\"model\":\"browser-observe-act-v1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, browser_manifest, currentPlatformLabel()) != null);
 }
 
 test "macos capability venoms: browser manifest can include stable runtime paths" {
