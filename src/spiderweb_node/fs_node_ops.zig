@@ -5930,6 +5930,147 @@ test "fs_node_ops: namespace service output augments status, health, and artifac
     try std.testing.expectEqualStrings("png-bytes", screenshot_node.content);
 }
 
+test "fs_node_ops: namespace service result.json stays readable after invoke writes" {
+    const allocator = std.testing.allocator;
+
+    const runtime_exe, const runtime_args = if (builtin.os.tag == .windows)
+        .{ "cmd.exe", &[_][]const u8{ "/C", "more" } }
+    else
+        .{ "sh", &[_][]const u8{ "-lc", "cat" } };
+
+    var node_ops = try NodeOps.init(allocator, &[_]ExportSpec{
+        .{
+            .name = "svc-readable-result",
+            .path = "service:readable-result",
+            .source_kind = .namespace,
+            .source_id = "service:readable-result",
+            .ro = false,
+            .namespace_venom = .{
+                .venom_id = "readable-result",
+                .runtime_kind = .native_proc,
+                .executable_path = runtime_exe,
+                .args = runtime_args,
+                .timeout_ms = 5_000,
+            },
+        },
+    });
+    defer node_ops.deinit();
+
+    const venom_idx = node_ops.exportByName("svc-readable-result").?;
+    const root_id = node_ops.exports.items[venom_idx].root_node_id;
+
+    const control_lookup_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":1,\"op\":\"LOOKUP\",\"node\":{d},\"a\":{{\"name\":\"control\"}}}}",
+        .{root_id},
+    );
+    defer allocator.free(control_lookup_json);
+    var control_lookup_req = try fs_protocol.parseRequest(allocator, control_lookup_json);
+    defer control_lookup_req.deinit();
+    var control_lookup_result = node_ops.dispatch(control_lookup_req);
+    defer control_lookup_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, control_lookup_result.err_no);
+
+    var control_lookup_parsed = try std.json.parseFromSlice(std.json.Value, allocator, control_lookup_result.result_json.?, .{});
+    defer control_lookup_parsed.deinit();
+    const control_id: u64 = @intCast(control_lookup_parsed.value.object.get("attr").?.object.get("id").?.integer);
+
+    const invoke_lookup_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":2,\"op\":\"LOOKUP\",\"node\":{d},\"a\":{{\"name\":\"invoke.json\"}}}}",
+        .{control_id},
+    );
+    defer allocator.free(invoke_lookup_json);
+    var invoke_lookup_req = try fs_protocol.parseRequest(allocator, invoke_lookup_json);
+    defer invoke_lookup_req.deinit();
+    var invoke_lookup_result = node_ops.dispatch(invoke_lookup_req);
+    defer invoke_lookup_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, invoke_lookup_result.err_no);
+
+    var invoke_lookup_parsed = try std.json.parseFromSlice(std.json.Value, allocator, invoke_lookup_result.result_json.?, .{});
+    defer invoke_lookup_parsed.deinit();
+    const invoke_id: u64 = @intCast(invoke_lookup_parsed.value.object.get("attr").?.object.get("id").?.integer);
+
+    const open_invoke_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":3,\"op\":\"OPEN\",\"node\":{d},\"a\":{{\"flags\":2}}}}",
+        .{invoke_id},
+    );
+    defer allocator.free(open_invoke_json);
+    var open_invoke_req = try fs_protocol.parseRequest(allocator, open_invoke_json);
+    defer open_invoke_req.deinit();
+    var open_invoke_result = node_ops.dispatch(open_invoke_req);
+    defer open_invoke_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, open_invoke_result.err_no);
+
+    var open_invoke_parsed = try std.json.parseFromSlice(std.json.Value, allocator, open_invoke_result.result_json.?, .{});
+    defer open_invoke_parsed.deinit();
+    const invoke_handle: u64 = @intCast(open_invoke_parsed.value.object.get("h").?.integer);
+
+    const payload_json =
+        "{\"ok\":true,\"status\":{\"state\":\"ok\"},\"health\":{\"state\":\"online\"}}";
+    const payload_b64 = try encodeBase64(allocator, payload_json);
+    defer allocator.free(payload_b64);
+
+    const write_invoke_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":4,\"op\":\"WRITE\",\"h\":{d},\"a\":{{\"off\":0,\"data_b64\":\"{s}\"}}}}",
+        .{ invoke_handle, payload_b64 },
+    );
+    defer allocator.free(write_invoke_json);
+    var write_invoke_req = try fs_protocol.parseRequest(allocator, write_invoke_json);
+    defer write_invoke_req.deinit();
+    var write_invoke_result = node_ops.dispatch(write_invoke_req);
+    defer write_invoke_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, write_invoke_result.err_no);
+
+    const result_lookup_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":5,\"op\":\"LOOKUP\",\"node\":{d},\"a\":{{\"name\":\"result.json\"}}}}",
+        .{root_id},
+    );
+    defer allocator.free(result_lookup_json);
+    var result_lookup_req = try fs_protocol.parseRequest(allocator, result_lookup_json);
+    defer result_lookup_req.deinit();
+    var result_lookup_result = node_ops.dispatch(result_lookup_req);
+    defer result_lookup_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, result_lookup_result.err_no);
+
+    var result_lookup_parsed = try std.json.parseFromSlice(std.json.Value, allocator, result_lookup_result.result_json.?, .{});
+    defer result_lookup_parsed.deinit();
+    const result_id: u64 = @intCast(result_lookup_parsed.value.object.get("attr").?.object.get("id").?.integer);
+
+    const open_result_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":6,\"op\":\"OPEN\",\"node\":{d},\"a\":{{\"flags\":0}}}}",
+        .{result_id},
+    );
+    defer allocator.free(open_result_json);
+    var open_result_req = try fs_protocol.parseRequest(allocator, open_result_json);
+    defer open_result_req.deinit();
+    var open_result_result = node_ops.dispatch(open_result_req);
+    defer open_result_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, open_result_result.err_no);
+
+    var open_result_parsed = try std.json.parseFromSlice(std.json.Value, allocator, open_result_result.result_json.?, .{});
+    defer open_result_parsed.deinit();
+    const result_handle: u64 = @intCast(open_result_parsed.value.object.get("h").?.integer);
+
+    const read_result_json = try std.fmt.allocPrint(
+        allocator,
+        "{{\"t\":\"req\",\"id\":7,\"op\":\"READ\",\"h\":{d},\"a\":{{\"off\":0,\"len\":4096}}}}",
+        .{result_handle},
+    );
+    defer allocator.free(read_result_json);
+    var read_result_req = try fs_protocol.parseRequest(allocator, read_result_json);
+    defer read_result_req.deinit();
+    var read_result = node_ops.dispatch(read_result_req);
+    defer read_result.deinit(allocator);
+    try std.testing.expectEqual(fs_protocol.Errno.SUCCESS, read_result.err_no);
+    try std.testing.expect(read_result.result_json != null);
+    try std.testing.expect(std.mem.indexOf(u8, read_result.result_json.?, payload_json) != null);
+}
+
 fn buildGdriveChangePersistHandle(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(allocator);

@@ -7,6 +7,7 @@ const max_capture_bytes: usize = 512 * 1024;
 const screenshot_resize_px: []const u8 = "720";
 const browser_state_path_env_var = capability.browser_state_path_env_var;
 const browser_profile_dir_env_var = capability.browser_profile_dir_env_var;
+const runtime_platform_label = capability.currentPlatformLabel();
 const playwright_helper_source =
     \\const fs = require("fs");
     \\const os = require("os");
@@ -72,7 +73,7 @@ const playwright_helper_source =
     \\function healthForReady(statePath, profileDir, playwrightSource) {
     \\  return {
     \\    state: "online",
-    \\    platform: "macos",
+    \\    platform: "__PLATFORM__",
     \\    readiness_state: "ready",
     \\    browser_ready: true,
     \\    browser_app: "Playwright Chromium",
@@ -115,7 +116,7 @@ const playwright_helper_source =
     \\    },
     \\    health: {
     \\      state: "degraded",
-    \\      platform: "macos",
+    \\      platform: "__PLATFORM__",
     \\      readiness_state: reason,
     \\      browser_ready: false,
     \\      reason,
@@ -193,10 +194,14 @@ const playwright_helper_source =
     \\
     \\  let context;
     \\  try {
-    \\    context = await playwright.chromium.launchPersistentContext(profileDir, {
+    \\    const launchOptions = {
     \\      headless: false,
     \\      viewport: { width: 1280, height: 900 }
-    \\    });
+    \\    };
+    \\    if (process.platform === "linux") {
+    \\      launchOptions.args = ["--no-sandbox"];
+    \\    }
+    \\    context = await playwright.chromium.launchPersistentContext(profileDir, launchOptions);
     \\  } catch (error) {
     \\    process.stdout.write(JSON.stringify(degraded("browser_launch_failed", String(error && error.message || error), statePath, profileDir, playwrightSource)));
     \\    return;
@@ -395,7 +400,7 @@ pub fn main() !void {
     if (parsed.value != .object) fatal("invalid_payload: invoke payload must be a JSON object");
 
     const op = getRequiredString(parsed.value.object, "op") orelse fatal("invalid_payload: missing op");
-    if (builtin.os.tag != .macos) {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux) {
         const rendered = try std.fmt.allocPrint(
             allocator,
             "{{\"ok\":true,\"venom_id\":\"{s}\",\"op\":\"{s}\",\"status\":{{\"state\":\"offline\",\"reason\":\"unsupported_platform\"}},\"health\":{{\"state\":\"offline\",\"platform\":\"{s}\"}},\"artifact_updates\":[{{\"path\":\"artifacts/last_observation.json\",\"content\":\"{{\\\"platform\\\":\\\"{s}\\\",\\\"supported\\\":false}}\"}},{{\"path\":\"artifacts/last_dom.json\",\"content\":\"{{}}\"}}]}}",
@@ -597,8 +602,16 @@ fn runPlaywrightDriver(allocator: std.mem.Allocator, request_json: []const u8) !
     defer allocator.free(helper_path);
     const request_path = try std.fmt.allocPrint(allocator, "/tmp/spiderweb-browser-playwright-{d}.json", .{timestamp});
     defer allocator.free(request_path);
+    const rendered_helper_source = try std.mem.replaceOwned(
+        u8,
+        allocator,
+        playwright_helper_source,
+        "__PLATFORM__",
+        runtime_platform_label,
+    );
+    defer allocator.free(rendered_helper_source);
 
-    try writeFileAbsoluteCompat(helper_path, playwright_helper_source);
+    try writeFileAbsoluteCompat(helper_path, rendered_helper_source);
     defer std.fs.deleteFileAbsolute(helper_path) catch {};
     try writeFileAbsoluteCompat(request_path, request_json);
     defer std.fs.deleteFileAbsolute(request_path) catch {};
