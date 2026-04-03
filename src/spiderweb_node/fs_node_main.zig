@@ -39,6 +39,16 @@ const PairMode = enum {
     request,
 };
 
+const ExpandedConfigArgs = struct {
+    items: std.ArrayListUnmanaged([]u8) = .{},
+
+    fn deinit(self: *ExpandedConfigArgs, allocator: std.mem.Allocator) void {
+        for (self.items.items) |item| allocator.free(item);
+        self.items.deinit(allocator);
+        self.* = .{};
+    }
+};
+
 const ParsedWsUrl = struct {
     host: []const u8,
     port: u16,
@@ -689,6 +699,8 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
+    var config_args = ExpandedConfigArgs{};
+    defer config_args.deinit(allocator);
 
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--internal-inproc-invoke")) {
         runInternalInprocInvoke(allocator, args[2..]) catch |err| {
@@ -703,6 +715,40 @@ pub fn main() !void {
             std.process.exit(125);
         };
         unreachable;
+    }
+
+    var effective_args = std.ArrayListUnmanaged([]const u8){};
+    defer effective_args.deinit(allocator);
+    try effective_args.append(allocator, args[0]);
+
+    var config_path: ?[]const u8 = null;
+    var raw_index: usize = 1;
+    while (raw_index < args.len) : (raw_index += 1) {
+        const arg = args[raw_index];
+        if (std.mem.eql(u8, arg, "--config")) {
+            raw_index += 1;
+            if (raw_index >= args.len) return error.InvalidArguments;
+            if (config_path != null) return error.InvalidArguments;
+            config_path = args[raw_index];
+            continue;
+        }
+        try effective_args.append(allocator, arg);
+    }
+
+    if (config_path) |path| {
+        config_args = try loadExpandedConfigArgs(allocator, path);
+
+        var merged = std.ArrayListUnmanaged([]const u8){};
+        defer merged.deinit(allocator);
+        try merged.append(allocator, effective_args.items[0]);
+        for (config_args.items.items) |arg| {
+            try merged.append(allocator, arg);
+        }
+        for (effective_args.items[1..]) |arg| {
+            try merged.append(allocator, arg);
+        }
+        effective_args.clearRetainingCapacity();
+        try effective_args.appendSlice(allocator, merged.items);
     }
 
     var bind_addr: []const u8 = "127.0.0.1";
@@ -748,96 +794,98 @@ pub fn main() !void {
     defer effective_exports.deinit(allocator);
 
     var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    while (i < effective_args.items.len) : (i += 1) {
+        const arg = effective_args.items[i];
         if (std.mem.eql(u8, arg, "--bind")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            bind_addr = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            bind_addr = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--port")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            port = try std.fmt.parseInt(u16, args[i], 10);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            port = try std.fmt.parseInt(u16, effective_args.items[i], 10);
         } else if (std.mem.eql(u8, arg, "--export")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            const spec = parseExportFlag(args[i]) catch return error.InvalidArguments;
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            const spec = parseExportFlag(effective_args.items[i]) catch return error.InvalidArguments;
             try exports.append(allocator, spec);
         } else if (std.mem.eql(u8, arg, "--auth-token")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            auth_token = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            auth_token = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--control-url")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            control_url = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            control_url = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--control-auth-token")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            control_auth_token = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            control_auth_token = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--operator-token")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            operator_token = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            operator_token = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--pair-mode")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            pair_mode = parsePairMode(args[i]) orelse return error.InvalidArguments;
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            pair_mode = parsePairMode(effective_args.items[i]) orelse return error.InvalidArguments;
             pair_mode_explicit = true;
         } else if (std.mem.eql(u8, arg, "--invite-token")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            invite_token = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            invite_token = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--node-name")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            node_name = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            node_name = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--fs-url")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            advertised_fs_url = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            advertised_fs_url = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--state-file")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            state_path = args[i];
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            state_path = effective_args.items[i];
         } else if (std.mem.eql(u8, arg, "--lease-ttl-ms")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            lease_ttl_ms = try std.fmt.parseInt(u64, args[i], 10);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            lease_ttl_ms = try std.fmt.parseInt(u64, effective_args.items[i], 10);
         } else if (std.mem.eql(u8, arg, "--refresh-interval-ms")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            refresh_interval_ms = try std.fmt.parseInt(u64, args[i], 10);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            refresh_interval_ms = try std.fmt.parseInt(u64, effective_args.items[i], 10);
         } else if (std.mem.eql(u8, arg, "--manifest-reload-interval-ms")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            manifest_reload_interval_ms = try std.fmt.parseInt(u64, args[i], 10);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            manifest_reload_interval_ms = try std.fmt.parseInt(u64, effective_args.items[i], 10);
         } else if (std.mem.eql(u8, arg, "--reconnect-backoff-ms")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            reconnect_backoff_ms = try std.fmt.parseInt(u64, args[i], 10);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            reconnect_backoff_ms = try std.fmt.parseInt(u64, effective_args.items[i], 10);
         } else if (std.mem.eql(u8, arg, "--reconnect-backoff-max-ms")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            reconnect_backoff_max_ms = try std.fmt.parseInt(u64, args[i], 10);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            reconnect_backoff_max_ms = try std.fmt.parseInt(u64, effective_args.items[i], 10);
         } else if (std.mem.eql(u8, arg, "--no-fs-venom")) {
             enable_fs_venom = false;
         } else if (std.mem.eql(u8, arg, "--terminal-id")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            try terminal_ids.append(allocator, args[i]);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            try terminal_ids.append(allocator, effective_args.items[i]);
         } else if (std.mem.eql(u8, arg, "--label")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            try node_labels.append(allocator, try parseLabelArg(args[i]));
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            try node_labels.append(allocator, try parseLabelArg(effective_args.items[i]));
         } else if (std.mem.eql(u8, arg, "--venom-manifest")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            try venom_manifest_paths.append(allocator, args[i]);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            try venom_manifest_paths.append(allocator, effective_args.items[i]);
         } else if (std.mem.eql(u8, arg, "--venoms-dir")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            try venom_dirs.append(allocator, args[i]);
+            if (i >= effective_args.items.len) return error.InvalidArguments;
+            try venom_dirs.append(allocator, effective_args.items[i]);
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printHelp();
             return;
@@ -854,7 +902,7 @@ pub fn main() !void {
     try buildTerminalNamespaceExports(
         allocator,
         terminal_ids.items,
-        args[0],
+        effective_args.items[0],
         &terminal_namespace_exports,
     );
 
@@ -1417,6 +1465,250 @@ fn parsePairMode(raw: []const u8) ?PairMode {
     if (std.mem.eql(u8, raw, "invite")) return .invite;
     if (std.mem.eql(u8, raw, "request")) return .request;
     return null;
+}
+
+fn readTextFileAllocAny(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    max_bytes: usize,
+) ![]u8 {
+    if (std.fs.path.isAbsolute(path)) {
+        var file = try std.fs.openFileAbsolute(path, .{});
+        defer file.close();
+        return file.readToEndAlloc(allocator, max_bytes);
+    }
+
+    var file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    return file.readToEndAlloc(allocator, max_bytes);
+}
+
+fn writeFileAtomicAny(path: []const u8, payload: []const u8) !void {
+    const tmp_path = try std.fmt.allocPrint(std.heap.page_allocator, "{s}.tmp", .{path});
+    defer std.heap.page_allocator.free(tmp_path);
+
+    if (std.fs.path.isAbsolute(path)) {
+        const parent = std.fs.path.dirname(path) orelse "/";
+        var root = try std.fs.openDirAbsolute("/", .{});
+        defer root.close();
+        const relative_parent = std.mem.trimLeft(u8, parent, "/");
+        if (relative_parent.len > 0) try root.makePath(relative_parent);
+        const relative_tmp = std.mem.trimLeft(u8, tmp_path, "/");
+        try root.writeFile(.{ .sub_path = relative_tmp, .data = payload });
+        try std.fs.renameAbsolute(tmp_path, path);
+        return;
+    }
+
+    try std.fs.cwd().writeFile(.{ .sub_path = tmp_path, .data = payload });
+    try std.fs.cwd().rename(tmp_path, path);
+}
+
+fn appendExpandedArg(
+    allocator: std.mem.Allocator,
+    expanded: *ExpandedConfigArgs,
+    value: []const u8,
+) !void {
+    try expanded.items.append(allocator, try allocator.dupe(u8, value));
+}
+
+fn appendExpandedFlagValue(
+    allocator: std.mem.Allocator,
+    expanded: *ExpandedConfigArgs,
+    flag: []const u8,
+    value: []const u8,
+) !void {
+    try appendExpandedArg(allocator, expanded, flag);
+    try appendExpandedArg(allocator, expanded, value);
+}
+
+fn appendExpandedUnsignedValue(
+    allocator: std.mem.Allocator,
+    expanded: *ExpandedConfigArgs,
+    flag: []const u8,
+    value: u64,
+) !void {
+    try appendExpandedArg(allocator, expanded, flag);
+    try expanded.items.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{value}));
+}
+
+fn jsonObjectString(value: std.json.Value, key: []const u8) ?[]const u8 {
+    if (value != .object) return null;
+    const field = value.object.get(key) orelse return null;
+    if (field != .string or field.string.len == 0) return null;
+    return field.string;
+}
+
+fn jsonObjectBool(value: std.json.Value, key: []const u8) ?bool {
+    if (value != .object) return null;
+    const field = value.object.get(key) orelse return null;
+    if (field != .bool) return null;
+    return field.bool;
+}
+
+fn jsonObjectU64(value: std.json.Value, key: []const u8) ?u64 {
+    if (value != .object) return null;
+    const field = value.object.get(key) orelse return null;
+    return switch (field) {
+        .integer => if (field.integer >= 0) @intCast(field.integer) else null,
+        else => null,
+    };
+}
+
+fn appendConfigStringField(
+    allocator: std.mem.Allocator,
+    expanded: *ExpandedConfigArgs,
+    root: std.json.Value,
+    field: []const u8,
+    flag: []const u8,
+) !void {
+    if (jsonObjectString(root, field)) |value| {
+        try appendExpandedFlagValue(allocator, expanded, flag, value);
+    }
+}
+
+fn appendConfigU64Field(
+    allocator: std.mem.Allocator,
+    expanded: *ExpandedConfigArgs,
+    root: std.json.Value,
+    field: []const u8,
+    flag: []const u8,
+) !void {
+    if (jsonObjectU64(root, field)) |value| {
+        try appendExpandedUnsignedValue(allocator, expanded, flag, value);
+    }
+}
+
+fn appendConfigStringArrayField(
+    allocator: std.mem.Allocator,
+    expanded: *ExpandedConfigArgs,
+    root: std.json.Value,
+    field: []const u8,
+    flag: []const u8,
+) !void {
+    if (root != .object) return;
+    const raw = root.object.get(field) orelse return;
+    if (raw != .array) return;
+    for (raw.array.items) |item| {
+        if (item != .string or item.string.len == 0) continue;
+        try appendExpandedFlagValue(allocator, expanded, flag, item.string);
+    }
+}
+
+fn appendConfigLabels(
+    allocator: std.mem.Allocator,
+    expanded: *ExpandedConfigArgs,
+    root: std.json.Value,
+) !void {
+    if (root != .object) return;
+    const raw = root.object.get("labels") orelse return;
+    switch (raw) {
+        .object => {
+            var it = raw.object.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.* != .string) continue;
+                const rendered = try std.fmt.allocPrint(
+                    allocator,
+                    "{s}={s}",
+                    .{ entry.key_ptr.*, entry.value_ptr.*.string },
+                );
+                defer allocator.free(rendered);
+                try appendExpandedFlagValue(allocator, expanded, "--label", rendered);
+            }
+        },
+        .array => {
+            for (raw.array.items) |item| {
+                if (item != .string or item.string.len == 0) continue;
+                try appendExpandedFlagValue(allocator, expanded, "--label", item.string);
+            }
+        },
+        else => {},
+    }
+}
+
+fn appendConfigExports(
+    allocator: std.mem.Allocator,
+    expanded: *ExpandedConfigArgs,
+    root: std.json.Value,
+) !void {
+    if (root != .object) return;
+    const raw = root.object.get("exports") orelse return;
+    if (raw != .array) return;
+
+    for (raw.array.items) |item| {
+        switch (item) {
+            .string => |raw_flag| {
+                if (raw_flag.len == 0) continue;
+                try appendExpandedFlagValue(allocator, expanded, "--export", raw_flag);
+            },
+            .object => {
+                const name = jsonObjectString(item, "name") orelse return error.InvalidArguments;
+                const path = jsonObjectString(item, "path") orelse return error.InvalidArguments;
+                const credential_handle = jsonObjectString(item, "credential_handle");
+                const mode_string = jsonObjectString(item, "mode");
+                const readonly = jsonObjectBool(item, "readonly");
+                const use_ro = if (readonly) |value|
+                    value
+                else if (mode_string) |mode|
+                    std.mem.eql(u8, mode, "ro")
+                else
+                    false;
+
+                var rendered = std.ArrayListUnmanaged(u8){};
+                defer rendered.deinit(allocator);
+                try rendered.writer(allocator).print("{s}={s}", .{ name, path });
+                if (use_ro) {
+                    try rendered.appendSlice(allocator, ":ro");
+                }
+                if (credential_handle) |value| {
+                    try rendered.writer(allocator).print(":cred={s}", .{value});
+                }
+                try appendExpandedFlagValue(allocator, expanded, "--export", rendered.items);
+            },
+            else => return error.InvalidArguments,
+        }
+    }
+}
+
+fn loadExpandedConfigArgs(
+    allocator: std.mem.Allocator,
+    config_path: []const u8,
+) !ExpandedConfigArgs {
+    var expanded = ExpandedConfigArgs{};
+    errdefer expanded.deinit(allocator);
+
+    const payload = try readTextFileAllocAny(allocator, config_path, 256 * 1024);
+    defer allocator.free(payload);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidArguments;
+
+    try appendConfigStringField(allocator, &expanded, parsed.value, "bind", "--bind");
+    try appendConfigU64Field(allocator, &expanded, parsed.value, "port", "--port");
+    try appendConfigExports(allocator, &expanded, parsed.value);
+    try appendConfigStringField(allocator, &expanded, parsed.value, "auth_token", "--auth-token");
+    try appendConfigStringField(allocator, &expanded, parsed.value, "control_url", "--control-url");
+    try appendConfigStringField(allocator, &expanded, parsed.value, "control_auth_token", "--control-auth-token");
+    try appendConfigStringField(allocator, &expanded, parsed.value, "operator_token", "--operator-token");
+    try appendConfigStringField(allocator, &expanded, parsed.value, "pair_mode", "--pair-mode");
+    try appendConfigStringField(allocator, &expanded, parsed.value, "invite_token", "--invite-token");
+    try appendConfigStringField(allocator, &expanded, parsed.value, "node_name", "--node-name");
+    try appendConfigStringField(allocator, &expanded, parsed.value, "fs_url", "--fs-url");
+    try appendConfigStringField(allocator, &expanded, parsed.value, "state_file", "--state-file");
+    try appendConfigU64Field(allocator, &expanded, parsed.value, "lease_ttl_ms", "--lease-ttl-ms");
+    try appendConfigU64Field(allocator, &expanded, parsed.value, "refresh_interval_ms", "--refresh-interval-ms");
+    try appendConfigU64Field(allocator, &expanded, parsed.value, "manifest_reload_interval_ms", "--manifest-reload-interval-ms");
+    try appendConfigU64Field(allocator, &expanded, parsed.value, "reconnect_backoff_ms", "--reconnect-backoff-ms");
+    try appendConfigU64Field(allocator, &expanded, parsed.value, "reconnect_backoff_max_ms", "--reconnect-backoff-max-ms");
+    if (jsonObjectBool(parsed.value, "enable_fs_venom")) |enabled| {
+        if (!enabled) try appendExpandedArg(allocator, &expanded, "--no-fs-venom");
+    }
+    try appendConfigStringArrayField(allocator, &expanded, parsed.value, "terminal_ids", "--terminal-id");
+    try appendConfigLabels(allocator, &expanded, parsed.value);
+    try appendConfigStringArrayField(allocator, &expanded, parsed.value, "venom_manifests", "--venom-manifest");
+    try appendConfigStringArrayField(allocator, &expanded, parsed.value, "venoms_dirs", "--venoms-dir");
+
+    return expanded;
 }
 
 fn parseLabelArg(raw: []const u8) !node_capability_providers.NodeLabelArg {
@@ -3179,7 +3471,7 @@ fn parsePendingRequestId(allocator: std.mem.Allocator, payload_json: []const u8)
 }
 
 fn loadNodePairState(allocator: std.mem.Allocator, state_path: []const u8) !NodePairState {
-    const raw = std.fs.cwd().readFileAlloc(allocator, state_path, 1024 * 1024) catch |err| switch (err) {
+    const raw = readTextFileAllocAny(allocator, state_path, 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => return .{},
         else => return err,
     };
@@ -3218,11 +3510,7 @@ fn saveNodePairState(allocator: std.mem.Allocator, state_path: []const u8, state
     try appendOptionalJsonStringField(allocator, &out, "fs_url", state.fs_url);
     try out.append(allocator, '}');
 
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{state_path});
-    defer allocator.free(tmp_path);
-
-    try std.fs.cwd().writeFile(.{ .sub_path = tmp_path, .data = out.items });
-    try std.fs.cwd().rename(tmp_path, state_path);
+    try writeFileAtomicAny(state_path, out.items);
 }
 
 fn runtimeStatePathForNodeState(allocator: std.mem.Allocator, state_path: []const u8) ![]u8 {
@@ -3234,7 +3522,7 @@ fn loadNamespaceRuntimeStateFromFile(
     runtime_state_path: []const u8,
     service: *fs_node_service.NodeService,
 ) !void {
-    const raw = std.fs.cwd().readFileAlloc(allocator, runtime_state_path, 1024 * 1024) catch |err| switch (err) {
+    const raw = readTextFileAllocAny(allocator, runtime_state_path, 1024 * 1024) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
@@ -3251,11 +3539,7 @@ fn saveNamespaceRuntimeStateToFile(
     defer allocator.free(payload);
 
     try ensureParentPathExists(runtime_state_path);
-    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{runtime_state_path});
-    defer allocator.free(tmp_path);
-
-    try std.fs.cwd().writeFile(.{ .sub_path = tmp_path, .data = payload });
-    try std.fs.cwd().rename(tmp_path, runtime_state_path);
+    try writeFileAtomicAny(runtime_state_path, payload);
 }
 
 fn appendOptionalJsonStringField(
@@ -3654,7 +3938,7 @@ fn printHelp() !void {
         \\spiderweb-fs-node - Distributed filesystem node server / daemon
         \\
         \\Usage:
-        \\  spiderweb-fs-node [--bind <addr>] [--port <port>] [--export <name>=<path>[:ro|:rw][:cred=<handle>]] [--auth-token <token>]
+        \\  spiderweb-fs-node [--config <path>] [--bind <addr>] [--port <port>] [--export <name>=<path>[:ro|:rw][:cred=<handle>]] [--auth-token <token>]
         \\                    [--control-url <ws-url> [--control-auth-token <token>] [--pair-mode <invite|request>] [--invite-token <token>]
         \\                     [--operator-token <token>] [--node-name <name>] [--fs-url <ws-url>] [--state-file <path>]
         \\                     [--lease-ttl-ms <ms>] [--refresh-interval-ms <ms>] [--manifest-reload-interval-ms <ms>] [--reconnect-backoff-ms <ms>] [--reconnect-backoff-max-ms <ms>]
@@ -3662,6 +3946,7 @@ fn printHelp() !void {
         \\                     [--venom-manifest <path>] [--venoms-dir <path>]]
         \\
         \\Examples:
+        \\  spiderweb-fs-node --config /etc/spider/node.json
         \\  spiderweb-fs-node --export work=.:rw
         \\  spiderweb-fs-node --bind 0.0.0.0 --port 18891 --export repo=/home/user/repo:ro
         \\  spiderweb-fs-node --export cloud=drive:root:ro:cred=gdrive.team
@@ -4012,6 +4297,61 @@ test "fs_node_main: terminal ids build executable namespace exports" {
     try std.testing.expectEqualStrings("1", first.args.items[2]);
     try std.testing.expect(std.mem.indexOf(u8, first.schema_json.?, "\"terminal-driver-v1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, first.invoke_template_json.?, "\"terminal_exec\"") != null);
+}
+
+test "fs_node_main: loadExpandedConfigArgs expands structured JSON config" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "node.json",
+        .data =
+            \\{
+            \\  "bind": "0.0.0.0",
+            \\  "port": 19001,
+            \\  "control_url": "ws://127.0.0.1:18790/",
+            \\  "pair_mode": "invite",
+            \\  "invite_token": "invite-123",
+            \\  "node_name": "linux-edge",
+            \\  "state_file": "/tmp/node-state.json",
+            \\  "enable_fs_venom": false,
+            \\  "terminal_ids": ["main"],
+            \\  "exports": [
+            \\    {"name":"repo","path":"/srv/repo","readonly":true},
+            \\    "shared=/srv/shared:rw"
+            \\  ],
+            \\  "labels": {
+            \\    "site": "lab"
+            \\  }
+            \\}
+        ,
+    });
+
+    const config_path = try tmp.dir.realpathAlloc(std.testing.allocator, "node.json");
+    defer std.testing.allocator.free(config_path);
+
+    var expanded = try loadExpandedConfigArgs(std.testing.allocator, config_path);
+    defer expanded.deinit(std.testing.allocator);
+
+    try std.testing.expect(expanded.items.items.len >= 14);
+    try std.testing.expectEqualStrings("--bind", expanded.items.items[0]);
+    try std.testing.expectEqualStrings("0.0.0.0", expanded.items.items[1]);
+
+    var saw_repo_export = false;
+    var saw_terminal = false;
+    var saw_no_fs_venom = false;
+    var saw_label = false;
+    for (expanded.items.items) |item| {
+        if (std.mem.eql(u8, item, "--no-fs-venom")) saw_no_fs_venom = true;
+        if (std.mem.eql(u8, item, "repo=/srv/repo:ro")) saw_repo_export = true;
+        if (std.mem.eql(u8, item, "main")) saw_terminal = true;
+        if (std.mem.eql(u8, item, "site=lab")) saw_label = true;
+    }
+
+    try std.testing.expect(saw_repo_export);
+    try std.testing.expect(saw_terminal);
+    try std.testing.expect(saw_no_fs_venom);
+    try std.testing.expect(saw_label);
 }
 
 test "fs_node_main: invokeTerminalRequestJson executes argv payload" {
